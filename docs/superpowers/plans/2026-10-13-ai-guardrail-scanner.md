@@ -32,36 +32,40 @@
 
 ### Task 1: Safe inventory and dependency profile
 
-- [ ] Add JUnit temp-project cases for a Java parse error, XML external entity, unresolved BOM property, external symlink and file limit.
-- [ ] Implement read-only bounded inventory with `Files.walkFileTree` without FOLLOW_LINKS, SHA-256 snapshot and JavaParser.
-- [ ] Parse known version literals/properties without executing builds. Return UNKNOWN for conflicts or unresolved versions.
-- [ ] Run `mvn -Dtest=ProjectLoaderTest test`; inspect diagnostics as well as file counts.
+- [x] Add JUnit temp-project cases for a Java parse error, XML external entity, unresolved BOM property, external symlink and file limit.
+- [x] Implement read-only bounded inventory with `Files.walkFileTree` without FOLLOW_LINKS, SHA-256 snapshot and JavaParser.
+- [x] Parse known version literals/properties without executing builds. Return UNKNOWN for conflicts or unresolved versions.
+- [x] Run `mvn -Dtest=ProjectLoaderTest test`; inspect diagnostics as well as file counts.
 
 ### Task 2: Versioned evidence rules
 
-- [ ] Establish a catalog with stable IDs, seven control domains, descriptions and evidence limits.
-- [ ] Write fixture-driven JUnit cases: unsafe data reaching sinks, constant/sanitized alternatives, non-AI lookalikes, unknown external enforcement.
-- [ ] Implement AST-based rules and limited expression/method relationships; names alone cannot prove security guarantees.
-- [ ] Emit UNKNOWN for unsupported version semantics and unresolvable paths, retaining exact source locations for proven observations.
-- [ ] Run `mvn -Dtest=RuleEngineTest test` and inspect the three evidence classes for each rule.
+- [x] Establish a catalog with stable IDs, seven control domains, descriptions and evidence limits.
+- [x] Write fixture-driven JUnit cases: unsafe data reaching sinks, constant/sanitized alternatives, non-AI lookalikes, unknown external enforcement.
+- [x] Implement AST-based rules and limited expression/method relationships; names alone cannot prove security guarantees.
+- [x] Emit UNKNOWN for unsupported version semantics and unresolvable paths, retaining exact source locations for proven observations.
+- [x] Run `mvn -Dtest=RuleEngineTest test` and inspect the three evidence classes for each rule.
 
 ### Task 3: Jobs and reports
 
-- [ ] Add tests for allowlist escape, symlinks, output overlap, single active job, cancellation race, unknown ID and bounded history.
-- [ ] Implement immutable terminal transitions and canonical report export with atomic per-file writes.
-- [ ] Generate Markdown without raw code and SARIF with rule IDs/relative URIs/line positions.
-- [ ] Reopen generated artifacts in tests and assert findings and UNKNOWN counts agree with canonical JSON.
+- [x] Add tests for allowlist escape, symlinks, output overlap, single active job, cancellation race, unknown ID and bounded history.
+- [x] Implement immutable terminal transitions and canonical report export with atomic per-file writes.
+- [x] Generate Markdown without raw code and SARIF with rule IDs/relative URIs/line positions.
+- [x] Reopen generated artifacts in tests and assert findings and UNKNOWN counts agree with canonical JSON.
 
 ### Task 4: MCP and CLI
 
-- [ ] Use official SDK Tool builders and stdio transport; validate allowed arguments independently of advertised JSON schema.
-- [ ] CLI `scan /absolute/repo --output /absolute/reports`; MCP `mcp --allow-root /absolute/projects --output /absolute/reports`.
-- [ ] Real subprocess test sends initialize, notifications/initialized, tools/list, scan_start, scan_status and scan_result; verify stdout is only protocol JSON.
-- [ ] Validate cancellation/invalid input and process EOF cleanup in integration tests.
-- [ ] Run `mvn verify`, build executable jar, run CLI fixture and independently parse all exported reports.
+- [x] Use official SDK Tool builders and stdio transport; validate allowed arguments independently of advertised JSON schema.
+- [x] CLI `scan /absolute/repo --output /absolute/reports`; MCP `mcp --allow-root /absolute/projects --output /absolute/reports`.
+- [x] Real subprocess test sends initialize, notifications/initialized, tools/list, scan_start, scan_status and scan_result; verify stdout is only protocol JSON.
+- [x] Validate cancellation/invalid input and process EOF cleanup in integration tests.
+- [x] Run `mvn verify`, build executable jar, run CLI fixture and independently parse all exported reports.
 
 ### Task 5: Delivery and review
 
-- [ ] Write Chinese README, rule support matrix, example safe/unsafe projects and MCP client configuration.
-- [ ] Independent review of evidence claims, trust boundaries and coverage, then fix actionable issues and rerun affected tests.
-- [ ] Record actual verification commands/results and remaining limits; do not label fixture validation as production assurance.
+- [x] Write Chinese README, rule support matrix, example safe/unsafe projects and MCP client configuration.
+- [x] Independent review of evidence claims, trust boundaries and coverage, then fix actionable issues and rerun affected tests.
+- [x] Record actual verification commands/results and remaining limits; do not label fixture validation as production assurance.
+
+## Completion evidence
+
+2026-10-13: `./scripts/mvn.sh -q clean verify` passed all 144 tests and built the executable jar. Re-ran all 4 MCP protocol tests against the packaged jar successfully. CLI examples and all three report formats were independently read back; exact counts and limitations are recorded in `docs/verification.md`. No target application execution, runtime effectiveness certification, remote deployment or publication was performed.

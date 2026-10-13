@@ -1,0 +1,8 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>unknown-controls</artifactId><version>1.0</version>
+  <dependencyManagement><dependencies><dependency>
+    <groupId>org.springframework.ai</groupId><artifactId>spring-ai-bom</artifactId>
+    <version>${external.spring.ai.version}</version><type>pom</type><scope>import</scope>
+  </dependency></dependencies></dependencyManagement>
+</project>
