@@ -46,6 +46,8 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 
 可以重复传入 `--allow-root`。允许目录和报告目录由启动 server 的操作员决定，MCP 请求不能扩大权限。stdout 仅用于 JSON-RPC，日志写入 stderr。
 
+本机 Codex 接入和 codebuddy、wm-sales 两个真实项目的流程结果见 [接入验收记录](docs/codex-integration-20261013.md)。两项目使用自定义模型网关，现版未完成其控制语义分析；流程成功不代表应用安全通过。
+
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
 | `guardrail_rules` | 无 | 查询规则目录与说明 |
