@@ -16,6 +16,7 @@ public final class Scanner {
     List<Map<String, Object>> assessments = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> diagnostics =
         new ArrayList<Map<String, Object>>(inventory.diagnostics);
+    Map<String, Object> mappingCoverage = new LinkedHashMap<String, Object>();
     Set<String> protocols = new TreeSet<String>();
     List<String> languages = new ArrayList<String>();
     boolean detected = false;
@@ -51,6 +52,7 @@ public final class Scanner {
       BankAnalysis bank = BankAnalysis.analyze(inventory, policy, cancel);
       assessments.addAll(0, bank.assessments);
       diagnostics.addAll(bank.diagnostics);
+      mappingCoverage.putAll(bank.mappingCoverage);
     }
     List<Map<String, Object>> bounded = new ArrayList<Map<String, Object>>();
     boolean truncated = assessments.size() > 1000;
@@ -79,14 +81,15 @@ public final class Scanner {
           Findings.diagnostic(
               "DIAGNOSTIC_LIMIT", "", "Additional diagnostics omitted; coverage incomplete."));
     }
+    Unknowns.complete(bounded, diagnostics);
     SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT);
     date.setTimeZone(TimeZone.getTimeZone("UTC"));
     Map<String, Object> report =
         Findings.map(
             "schemaVersion",
-            "1.3",
+            "1.4",
             "ruleSetVersion",
-            "java-python-guardrail-v4",
+            "java-python-guardrail-v5",
             "scanId",
             id,
             "createdAt",
@@ -120,9 +123,13 @@ public final class Scanner {
                 "minimumJavaVersion",
                 "1.7",
                 "scannerVersion",
-                "0.4.0"),
+                "0.5.0"),
             "policy",
             policy.metadata(),
+            "mappingCoverage",
+            mappingCoverage,
+            "unknownSummary",
+            Unknowns.summarize(bounded),
             "complete",
             false,
             "securityVerified",

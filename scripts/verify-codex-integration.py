@@ -65,7 +65,7 @@ def tool(name,args,expect_error=False):
     return value
 def stable_report(report):
     return {key:report[key] for key in ['schemaVersion','ruleSetVersion','sourceDigest','project',
-            'complete','securityVerified','policy','gateDecision','assessments','diagnostics']}
+            'complete','securityVerified','policy','gateDecision','unknownSummary','mappingCoverage','assessments','diagnostics']}
 def expected_ids(rules,languages,profile):
     ids={r['id'] for r in rules if
          (r['id'].startswith('AI-PY-') and 'python' in languages) or
@@ -77,15 +77,62 @@ def expected_ids(rules,languages,profile):
 def verify_policy(report):
     assert report['complete'] is False and report['securityVerified'] is False
     assert report['policy']['profile']==args.profile
-    assert report['policy']['version']=='bank-policy-v1'
+    policy_input=json.loads(args.bank_policy.read_text()) if args.bank_policy is not None else {'version':1,'contracts':[]}
+    assert report['policy']['version']=='bank-policy-v'+str(policy_input['version']),report['policy']
     digest=report['policy']['digest']
     assert len(digest)==64 and all(c in '0123456789abcdef' for c in digest)
-    contracts=json.loads(args.bank_policy.read_text())['contracts'] if args.bank_policy is not None else []
+    contracts=policy_input.get('contracts', [])
     assert report['policy']['contractCount']==len(contracts)
     assert report['gateDecision']==('BLOCK' if any(a['disposition']=='VIOLATED' for a in report['assessments']) else 'REVIEW')
+def verify_unknowns(report, state, sarif_properties, markdown, context):
+    categories = {'MISSING_MAPPING', 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED'}
+    unknown = [item for item in report['assessments'] if item['disposition'] == 'UNKNOWN']
+    counts = dict.fromkeys(sorted(categories), 0)
+    for item in unknown:
+        tag = (context, item['ruleId'])
+        assert item.get('unknownCategory') in categories, (tag, 'missing UNKNOWN category', item)
+        counts[item['unknownCategory']] += 1
+        reasons = item.get('unknownReasons')
+        assert isinstance(reasons, list) and reasons, (tag, 'missing UNKNOWN reasons')
+        for reason in reasons:
+            assert set(reason) == {'category', 'code', 'explanation'}, (tag, reason)
+            assert reason['category'] in categories, (tag, reason)
+            assert isinstance(reason['code'], str) and reason['code'], (tag, reason)
+            assert isinstance(reason['explanation'], str) and reason['explanation'], (tag, reason)
+        assert reasons[0]['category'] == item['unknownCategory'], (tag, 'primary reason mismatch')
+        assert len(reasons) == len({json.dumps(r, sort_keys=True) for r in reasons}), (tag, 'duplicate reasons')
+    assert report.get('unknownSummary') == counts, (context, 'report UNKNOWN counts', report.get('unknownSummary'), counts)
+    assert state.get('unknownSummary') == counts, (context, 'status UNKNOWN counts', state)
+    assert state['unknowns'] == sum(counts.values()), (context, 'status UNKNOWN total', state)
+    assert sarif_properties.get('unknownSummary') == counts, (context, 'SARIF UNKNOWN counts')
+    assert sarif_properties.get('unknownAssessments') == len(unknown), (context, 'SARIF legacy UNKNOWN total')
+    expected = []
+    fields = ['ruleId', 'domain', 'disposition', 'severity', 'title', 'explanation',
+              'recommendation', 'limitations', 'profile', 'mappedPathOutcomes', 'unknownCategory']
+    for item in unknown:
+        detail = {key: item[key] for key in fields if key in item}
+        detail['unknownReasons'] = item['unknownReasons']
+        detail['evidence'] = [{key: evidence[key] for key in ['path', 'line', 'detail', 'role', 'nodeId']
+                               if key in evidence} for evidence in item['evidence']]
+        expected.append(detail)
+    assert sarif_properties.get('unknownAssessmentsDetails') == expected, (context, 'SARIF UNKNOWN details differ')
+    assert all(d.get('category') in categories for d in report['diagnostics']), (context, 'unclassified diagnostics')
+    assert 'UNKNOWN 原因分类' in markdown and all(label in markdown for label in ['缺少映射', '证据不足', '暂不支持']), (context, 'Markdown UNKNOWN breakdown missing')
+    coverage = report.get('mappingCoverage')
+    assert isinstance(coverage, dict), (context, 'mapping coverage missing')
+    assert state.get('mappingCoverage') == coverage, (context, 'status mapping coverage differs')
+    assert sarif_properties.get('mappingCoverage') == coverage, (context, 'SARIF mapping coverage differs')
+    if report['policy']['profile'] != 'generic':
+        for key in ['contractDefinitions', 'matchedDefinitions', 'matchedCallSites', 'matchedBoundarySites',
+                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions']:
+            assert type(coverage.get(key)) is int and coverage[key] >= 0, (context, 'invalid mapping count', key, coverage)
+        assert coverage['matchedDefinitions'] <= coverage['contractDefinitions'], (context, 'mapping definition counts', coverage)
+        assert type(coverage.get('sourceDigestMatched')) is bool, (context, 'missing source binding result', coverage)
+
+
 transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.4.0'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.5.0'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -98,7 +145,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==len({r['id'] for r in rules})==33
-    assert server['serverInfo']['version']=='0.4.0'
+    assert server['serverInfo']['version']=='0.5.0'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -115,13 +162,14 @@ try:
             assert not r['contentOmitted'],(name,fmt)
             assert Path(r['artifacts'][fmt]).read_text()==r['content']
         report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
-        assert report['schemaVersion']=='1.3'
-        assert report['ruleSetVersion']=='java-python-guardrail-v4'
-        assert report['runtime']['scannerVersion']=='0.4.0'
+        assert report['schemaVersion']=='1.4'
+        assert report['ruleSetVersion']=='java-python-guardrail-v5'
+        assert report['runtime']['scannerVersion']=='0.5.0'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         verify_policy(report)
         assert s['policy']==report['policy']
         assert s['gateDecision']==report['gateDecision']
+        verify_unknowns(report,s,sarif['runs'][0]['properties'],results['markdown']['content'],name)
         if args.require_python_parse_success:
             assert not any(d['code'] in ['PYTHON_PARSE_FAILED','PYTHON_PARSE_DEPTH',
                                         'PYTHON_ANALYSIS_LIMIT','BANK_PYTHON_PARSE_FAILED',
@@ -148,10 +196,13 @@ try:
         stable_reports[path]=stable_report(report)
         assert {a['domain'] for a in report['assessments']}=={'L'+str(i) for i in range(1,8)}
         terminal=tool('guardrail_scan_cancel',{'scanId':scanid});assert terminal==s
-        row={'name':name,'repository':path,'scanId':scanid,'states':states,'seconds':round(time.monotonic()-t,3),'status':s,'project':report['project'],'runtime':report['runtime'],'dispositions':{d:sum(a['disposition']==d for a in report['assessments']) for d in ['VIOLATED','OBSERVED','UNKNOWN','NOT_APPLICABLE']},'diagnostics':report['diagnostics'],'sourceDigest':report['sourceDigest'],'policy':report['policy'],'gateDecision':report['gateDecision'],'artifacts':results['json']['artifacts'],'reportFormatsVerified':True,'terminalStateImmutable':True}
+        row={'name':name,'repository':path,'scanId':scanid,'states':states,'seconds':round(time.monotonic()-t,3),'status':s,'project':report['project'],'runtime':report['runtime'],'dispositions':{d:sum(a['disposition']==d for a in report['assessments']) for d in ['VIOLATED','OBSERVED','UNKNOWN','NOT_APPLICABLE']},'diagnostics':report['diagnostics'],'sourceDigest':report['sourceDigest'],'policy':report['policy'],'gateDecision':report['gateDecision'],'unknownSummary':report['unknownSummary'],'mappingCoverage':report['mappingCoverage'],'artifacts':results['json']['artifacts'],'reportFormatsVerified':True,'terminalStateImmutable':True}
         summary['projects'].append(row)
         print(json.dumps({k:v for k,v in row.items() if k not in ['diagnostics','artifacts']},ensure_ascii=False),flush=True)
     summary['passed']=True
+except Exception as error:
+    summary['failure']={'type':type(error).__name__,'message':str(error)}
+    raise
 finally:
     (OUT/'mcp-tool-transcript.json').write_text(json.dumps(transcript,ensure_ascii=False,indent=2)+'\n')
     (OUT/'stable-reports.json').write_text(json.dumps(stable_reports,ensure_ascii=False,indent=2)+'\n')

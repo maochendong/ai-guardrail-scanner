@@ -165,7 +165,7 @@ public class BankPolicyIntegrationTest {
             "[]",
             "{\"version\":1,\"contracts\":[],\"gate\":\"ALLOW\"}",
             "{\"version\":1,\"version\":1,\"contracts\":[]}",
-            "{\"version\":2,\"contracts\":[]}",
+            "{\"version\":3,\"contracts\":[]}",
             "{\"version\":\"1\",\"contracts\":[]}",
             "{\"version\":1,\"contracts\":{}}",
             EMPTY + " {}")) rejected(json);

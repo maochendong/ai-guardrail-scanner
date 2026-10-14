@@ -2,6 +2,7 @@ package dev.aiguard.compat;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,24 +36,27 @@ public final class Findings {
       String recommendation,
       List<Map<String, Object>> evidence,
       String... limitations) {
-    return map(
-        "ruleId",
-        id,
-        "domain",
-        domain,
-        "disposition",
-        disposition,
-        "severity",
-        severity,
-        "title",
-        title,
-        "explanation",
-        explanation,
-        "recommendation",
-        recommendation,
-        "evidence",
-        new ArrayList<Map<String, Object>>(evidence),
-        "limitations",
-        new ArrayList<String>(Arrays.asList(limitations)));
+    Map<String, Object> result =
+        map(
+            "ruleId",
+            id,
+            "domain",
+            domain,
+            "disposition",
+            disposition,
+            "severity",
+            severity,
+            "title",
+            title,
+            "explanation",
+            explanation,
+            "recommendation",
+            recommendation,
+            "evidence",
+            new ArrayList<Map<String, Object>>(evidence),
+            "limitations",
+            new ArrayList<String>(Arrays.asList(limitations)));
+    Unknowns.complete(Arrays.asList(result), Collections.<Map<String, Object>>emptyList());
+    return result;
   }
 }

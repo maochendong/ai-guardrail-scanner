@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "contracts": [
+    {"symbol":"example.Port#generate","arity":1,"kind":"source","label":"model-output","outboundArgs":[0]},
+    {"symbol":"example.Port#inspect","arity":1,"kind":"check","control":"guard","args":[0],"accept":true,"failureMode":"closed","decision":{"symbol":"example.Decision#accepted","arg":-1}},
+    {"symbol":"example.Handler#answer","arity":1,"kind":"sink","channel":"release","boundary":"return","args":[0],"requiresLabel":"model-output"},
+    {"symbol":"example_index.Search.lookup","arity":3,"parameterNames":["query","limit","where"],"defaults":{"limit":5,"where":null},"kind":"sink","channel":"retrieve","args":[0,2],"identity":-1,"scope":"unknown"}
+  ],
+  "receivers": [
+    {"owner":"sample.Service","field":"index","type":"example_index.Search","assurance":"candidate"}
+  ]
+}

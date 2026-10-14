@@ -17,17 +17,21 @@ public final class BankFlow {
     public String path = "", symbol = "";
     public int line = 1;
     public final List<String> params = new ArrayList<String>();
+    public final List<String> parameterNames = new ArrayList<String>();
     public final List<Stmt> body = new ArrayList<Stmt>();
   }
 
   public static final class Expr {
-    /** NAME, CALL, LITERAL, UNARY, BINARY, COMPOSITE or UNKNOWN. */
+    /** NAME, CALL, NEW, MEMBER, MAP, LITERAL, UNARY, BINARY, COMPOSITE or UNKNOWN. */
     public String kind, name = "", symbol = "", operator = "", path = "";
 
     public Object literal;
     public Expr receiver;
+    public boolean bindingUncertain;
     public int line = 1;
     public final List<Expr> args = new ArrayList<Expr>();
+    public final List<String> argNames = new ArrayList<String>();
+    public final java.util.Map<String, Expr> members = new java.util.LinkedHashMap<String, Expr>();
 
     public Expr(String kind) {
       this.kind = kind;
@@ -35,7 +39,7 @@ public final class BankFlow {
   }
 
   public static final class Stmt {
-    /** ASSIGN, EXPR, IF, RETURN, THROW, TRY, or UNKNOWN. */
+    /** ASSIGN, EXPR, IF, RETURN, YIELD, THROW, TRY, or UNKNOWN. */
     public String kind, target = "", path = "";
 
     public int line = 1;

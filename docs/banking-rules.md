@@ -36,6 +36,8 @@ MCP 保持五个工具：`guardrail_rules`、`guardrail_scan_start`、`guardrail
 
 没有映射到适用输出点时，规则输出 UNKNOWN。名称包含 `auth`、`mask`、`guard`、`risk` 等字样不构成合同，也不自动建立控制证据。
 
+0.5.0 增加向后兼容的 [v2 真实语义映射与 UNKNOWN 分类](bank-semantic-mappings.md)，包括对象判定、参数缺省值和 return/yield 边界。下文合同字段说明以 v1 为基准，v2 差异以该文档为准。
+
 ## 从外部加载合同
 
 合同是 UTF-8 JSON，必须显式传入 `--bank-policy`。文件由操作员维护，应放在被扫描仓库之外；MCP 启动时还会检查文件不在配置的允许根目录内。扫描请求会再次核验。目标应用不能通过提交仓库文件来替换合同。
@@ -154,7 +156,7 @@ def answer():
 
 ## 报告与门禁
 
-JSON、Markdown、SARIF 记录所选 `policy`，包括 profile、`bank-policy-v1`、合同数和策略摘要；源文件摘要 `sourceDigest` 与策略摘要分开。源码不变而策略不同，应作为不同评估条件保留。
+JSON、Markdown、SARIF 记录所选 `policy`，包括 profile、`bank-policy-v1/v2`、合同数和策略摘要；源文件摘要 `sourceDigest` 与策略摘要分开。源码不变而策略不同，应作为不同评估条件保留。
 
 银行证据包含相对路径、行号、受控描述以及 `source`、`transform`、`control`、`sink` 角色和 `nodeId`。它们用于复核局部来源关系，不包含原始提示词、客户数据或合同正文。
 

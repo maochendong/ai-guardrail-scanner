@@ -16,14 +16,25 @@ public final class BankJavaAnalysis {
   private final Cancel cancel;
   private final BankFlow.Program program = new BankFlow.Program();
   private final Set<String> diagnostics = new HashSet<String>();
+  private final Set<String> duplicateTypes = new HashSet<String>();
   private int remaining = 150000;
 
   private BankJavaAnalysis(JavaGraph graph, Cancel cancel) {
     this.graph = graph;
     this.cancel = cancel;
+    Set<String> types = new HashSet<String>();
+    for (Unit unit : graph.units)
+      for (JavaSyntax.Type type : unit.types) {
+        cancel.check();
+        if (!types.add(type.qualifiedName)) duplicateTypes.add(type.qualifiedName);
+      }
   }
 
   public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
+    return adapt(files, cancel, BankPolicy.generic());
+  }
+
+  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel, BankPolicy policy) {
     List<Unit> units = new ArrayList<Unit>();
     for (SourceFile file : files) {
       cancel.check();
@@ -51,7 +62,10 @@ public final class BankJavaAnalysis {
       function.path = method.node.unit.path;
       function.line = method.line;
       function.symbol = method.owner.qualifiedName + "#" + method.name;
-      for (Param param : method.params) function.params.add(key(param.node));
+      for (Param param : method.params) {
+        function.params.add(key(param.node));
+        function.parameterNames.add(param.name);
+      }
       program.functions.add(function);
       try {
         if (method.rootNode == null) function.body.add(statement("UNKNOWN", method.node));
@@ -206,10 +220,82 @@ public final class BankJavaAnalysis {
     if (kind.equals("CALL")) {
       BankFlow.Expr result = expr("CALL", node);
       result.symbol = symbol(node);
+      JavaGraph.Edge edge = graph.resolve(node);
+      result.bindingUncertain =
+          result.symbol.length() == 0
+              || edge.reasons.contains("AMBIGUOUS_DISPATCH")
+              || edge.reasons.contains("TARGET_LIMIT")
+              || edge.reasons.contains("UNSUPPORTED_OR_LIMIT");
       if (node.receiver != null && !typeReceiver(node.receiver))
         result.receiver = expression(node.receiver, depth + 1);
-      for (Node arg : node.args) result.args.add(expression(arg, depth + 1));
+      for (Node arg : node.args) {
+        result.args.add(expression(arg, depth + 1));
+        result.argNames.add("");
+      }
+      if (result.symbol.equals("java.util.Map#of")
+          && !result.bindingUncertain
+          && edge.reasons.contains("EXTERNAL_TYPE")
+          && node.args.size() % 2 == 0
+          && node.args.size() <= 20) {
+        Set<String> names = new HashSet<String>();
+        boolean constantKeys = true;
+        for (int i = 0; i < node.args.size(); i += 2) {
+          String name = stringKey(node.args.get(i));
+          if (name == null || !names.add(name)) {
+            constantKeys = false;
+            break;
+          }
+        }
+        if (constantKeys) {
+          result.kind = "MAP";
+          for (int i = 0; i < node.args.size(); i += 2)
+            result.members.put(stringKey(node.args.get(i)), result.args.get(i + 1));
+          result.args.clear();
+          result.argNames.clear();
+        }
+      } else if (result.symbol.equals("java.util.Map#get")
+          && !result.bindingUncertain
+          && edge.reasons.contains("EXTERNAL_TYPE")
+          && result.receiver != null
+          && node.args.size() == 1
+          && stringKey(node.args.get(0)) != null) {
+        result.kind = "MEMBER";
+        result.name = stringKey(node.args.get(0));
+        result.args.clear();
+        result.argNames.clear();
+      }
       return result;
+    }
+    if (kind.equals("FIELD") && node.receiver != null && !node.name.equals("<unsupported>")) {
+      BankFlow.Expr result = expr("MEMBER", node);
+      result.receiver = expression(node.receiver, depth + 1);
+      result.name = node.name;
+      return result;
+    }
+    if (kind.equals("ARRAY_ACCESS")
+        && node.args.size() == 2
+        && stringKey(node.args.get(1)) != null) {
+      BankFlow.Expr result = expr("MEMBER", node);
+      result.receiver = expression(node.receiver, depth + 1);
+      result.name = stringKey(node.args.get(1));
+      return result;
+    }
+    if (kind.equals("NEW")
+        && !node.modifiers.contains("array")
+        && !node.modifiers.contains("anonymous")) {
+      String type = graph.declaredType(node);
+      boolean constructor = type.length() > 0 && !type.endsWith("[]");
+      for (Node child : node.children) if (!node.args.contains(child)) constructor = false;
+      if (constructor) {
+        BankFlow.Expr result = expr("NEW", node);
+        result.symbol = type + "#<init>";
+        result.bindingUncertain = duplicateTypes.contains(type);
+        for (Node arg : node.args) {
+          result.args.add(expression(arg, depth + 1));
+          result.argNames.add("");
+        }
+        return result;
+      }
     }
     if (kind.equals("LITERAL")) {
       BankFlow.Expr result = expr("LITERAL", node);
@@ -255,6 +341,14 @@ public final class BankJavaAnalysis {
       for (Node child : node.children)
         if (isExpression(child)) result.args.add(expression(child, depth + 1));
     return result;
+  }
+
+  private static String stringKey(Node node) {
+    while (node != null && node.kind.equals("PAREN") && node.args.size() == 1)
+      node = node.args.get(0);
+    return node != null && node.kind.equals("LITERAL") && node.type.equals("java.lang.String")
+        ? node.literalValue
+        : null;
   }
 
   private String symbol(Node call) {

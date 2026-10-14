@@ -163,7 +163,19 @@ public final class ScanService implements AutoCloseable {
         "violations",
         job.report == null ? 0 : Scanner.count(job.report, "VIOLATED"),
         "unknowns",
-        job.report == null ? 0 : Scanner.count(job.report, "UNKNOWN"));
+        job.report == null ? 0 : Scanner.count(job.report, "UNKNOWN"),
+        "unknownSummary",
+        unknownSummary(job.report),
+        "mappingCoverage",
+        job.report == null ? null : job.report.get("mappingCoverage"));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> unknownSummary(Map<String, Object> report) {
+    return Unknowns.summarize(
+        report == null
+            ? Collections.<Map<String, Object>>emptyList()
+            : (List<Map<String, Object>>) report.get("assessments"));
   }
 
   public synchronized Map<String, Object> cancel(String id) {

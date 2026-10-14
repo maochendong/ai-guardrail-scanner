@@ -234,8 +234,10 @@ public class BankPythonAnalysisTest {
   }
 
   @Test
-  public void keywordAndStarCallsCannotGuessPolicySlots() {
-    assertFalse(symbol(adapt("from boundary import send\nsend(payload=value)\n"), "boundary.send"));
+  public void keywordsKeepNamesWhileStarCallsCannotGuessPolicySlots() {
+    BankFlow.Program keyword = adapt("from boundary import send\nsend(payload=value)\n");
+    assertTrue(symbol(keyword, "boundary.send"));
+    assertEquals(Arrays.asList("payload"), calls(keyword).get(0).argNames);
     assertFalse(symbol(adapt("from boundary import send\nsend(*values)\n"), "boundary.send"));
     assertFalse(symbol(adapt("from boundary import send\nsend(**values)\n"), "boundary.send"));
   }

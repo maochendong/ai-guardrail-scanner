@@ -12,25 +12,61 @@ public final class BankAnalysis {
   private final Map<String, String> literals = new HashMap<String, String>();
   private int operations, serial;
   private boolean incomplete;
+  private final Set<String> limitedRules = new HashSet<String>();
+  private final Set<String> bindingRules = new HashSet<String>();
+  private final Set<String> declaredRules = new HashSet<String>();
   private List<State> exceptionFrame;
+  private BankFlow.Function currentFunction;
+  private final Set<String> callSites = new HashSet<String>(),
+      boundarySites = new HashSet<String>(),
+      candidateSites = new HashSet<String>(),
+      bindingFailures = new HashSet<String>();
+  public final Map<String, Object> mappingCoverage =
+      Findings.map(
+          "contractDefinitions",
+          0,
+          "matchedDefinitions",
+          0,
+          "matchedCallSites",
+          0,
+          "matchedBoundarySites",
+          0,
+          "candidateCallSites",
+          0,
+          "argumentBindingFailures",
+          0,
+          "analyzedFunctions",
+          0,
+          "sourceDigestMatched",
+          true);
+  private String mappingFailure = "";
 
   private BankAnalysis(BankPolicy policy, Cancel cancel) {
     this.policy = policy;
     this.cancel = cancel;
+    for (BankPolicy.Contract contract : policy.allContracts()) related(contract, declaredRules);
+    mappingCoverage.put("contractDefinitions", policy.contractCount());
   }
 
   public static BankAnalysis analyze(Inventory inventory, BankPolicy policy, Cancel cancel) {
-    if (policy.contractCount() == 0) {
+    if (policy.contractCount() == 0 || !policy.matchesSourceDigest(inventory.digest)) {
       BankFlow.Program empty = new BankFlow.Program();
       empty.diagnostics.add(
           Findings.diagnostic(
               "BANK_POLICY_UNMAPPED",
               "",
               "No operator semantic contracts supplied; bank controls remain unassessed."));
-      return analyze(empty, policy, cancel);
+      BankAnalysis missing = new BankAnalysis(policy, cancel);
+      missing.mappingFailure =
+          policy.contractCount() == 0 ? "NO_OPERATOR_MAPPING" : "STALE_SOURCE_MAPPING";
+      missing.mappingCoverage.put(
+          "sourceDigestMatched", policy.matchesSourceDigest(inventory.digest));
+      missing.diagnostics.addAll(empty.diagnostics);
+      missing.finish();
+      return missing;
     }
-    BankFlow.Program java = BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel);
-    BankFlow.Program python = BankPythonAnalysis.adapt(inventory.python, cancel);
+    BankFlow.Program java = BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel, policy);
+    BankFlow.Program python = BankPythonAnalysis.adapt(inventory.python, cancel, policy);
     java.functions.addAll(python.functions);
     java.diagnostics.addAll(python.diagnostics);
     return analyze(java, policy, cancel);
@@ -39,22 +75,46 @@ public final class BankAnalysis {
   public static BankAnalysis analyze(BankFlow.Program program, BankPolicy policy, Cancel cancel) {
     BankAnalysis analysis = new BankAnalysis(policy, cancel);
     analysis.diagnostics.addAll(program.diagnostics);
-    analysis.incomplete = !program.diagnostics.isEmpty();
+    int analyzed = 0;
+    Set<String> definitions = new HashSet<String>();
     try {
       for (BankFlow.Function function : program.functions) {
         analysis.tick();
+        if (policy.contract(function.symbol, function.params.size()) != null)
+          definitions.add(function.symbol + "/" + function.params.size());
+        if (!analysis.relevant(function)) continue;
+        analyzed++;
+        analysis.currentFunction = function;
         State initial = new State();
+        for (Map<String, Object> diagnostic : program.diagnostics)
+          if (function.path.equals(diagnostic.get("path"))) initial.uncertain = true;
         for (String param : function.params) initial.vars.put(param, analysis.fresh(null));
-        analysis.walk(function.body, Arrays.asList(initial), 0);
+        try {
+          List<State> exits = analysis.walk(function.body, Arrays.asList(initial), 0);
+          for (State exit : exits)
+            if ("RETURN".equals(exit.stopped) && exit.returnStatement != null)
+              analysis.boundary(exit.returnStatement, exit.returnValue, exit);
+        } catch (Limit limit) {
+          analysis.incomplete = true;
+          analysis.markLimited(function);
+          analysis.diagnostics.add(
+              Findings.diagnostic(
+                  "BANK_FLOW_LIMIT",
+                  function.path,
+                  "Mapped function exceeds local path or nesting limits; coverage is incomplete."));
+        }
       }
     } catch (Limit limit) {
       analysis.incomplete = true;
+      for (BankFlow.Function function : program.functions) analysis.markLimited(function);
       analysis.diagnostics.add(
           Findings.diagnostic(
               "BANK_FLOW_LIMIT",
               "",
               "Bank local-flow budget exhausted; remaining paths are unknown."));
     }
+    analysis.mappingCoverage.put("matchedDefinitions", definitions.size());
+    analysis.mappingCoverage.put("analyzedFunctions", analyzed);
     analysis.finish();
     return analysis;
   }
@@ -66,6 +126,12 @@ public final class BankAnalysis {
     Boolean bool;
     Proof decision;
     boolean accepted = true;
+    boolean knownLiteral;
+    BankPolicy.Contract pending;
+    Proof pendingProof;
+    final Set<String> labels = new HashSet<String>();
+    final Map<String, Value> members = new LinkedHashMap<String, Value>();
+    final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     final List<Map<String, Object>> trace = new ArrayList<Map<String, Object>>();
   }
 
@@ -73,6 +139,7 @@ public final class BankAnalysis {
     String key;
     int epoch;
     Map<String, Object> evidence;
+    boolean assured = true, failureOpen, failureUnknown;
   }
 
   private static final class State {
@@ -83,6 +150,8 @@ public final class BankAnalysis {
     boolean uncertain;
     int epoch;
     String stopped = "";
+    Value returnValue;
+    BankFlow.Stmt returnStatement;
 
     State copy() {
       State copy = new State();
@@ -92,6 +161,8 @@ public final class BankAnalysis {
       copy.invalidated.addAll(invalidated);
       copy.uncertain = uncertain;
       copy.stopped = stopped;
+      copy.returnValue = returnValue;
+      copy.returnStatement = returnStatement;
       copy.epoch = epoch;
       return copy;
     }
@@ -102,6 +173,7 @@ public final class BankAnalysis {
     int sites;
     final Set<String> seen = new HashSet<String>();
     final List<Map<String, Object>> evidence = new ArrayList<Map<String, Object>>();
+    final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
   }
 
   private static final class Limit extends RuntimeException {
@@ -146,10 +218,18 @@ public final class BankAnalysis {
         } else if ("EXPR".equals(statement.kind)) {
           eval(statement.expr, state, 0);
           next.add(state);
-        } else if ("RETURN".equals(statement.kind) || "THROW".equals(statement.kind)) {
-          if (statement.expr != null) eval(statement.expr, state, 0);
+        } else if ("RETURN".equals(statement.kind)
+            || "THROW".equals(statement.kind)
+            || "YIELD".equals(statement.kind)) {
+          Value value = statement.expr == null ? fresh(null) : eval(statement.expr, state, 0);
+          if (statement.expr == null) value.knownLiteral = true;
           if ("THROW".equals(statement.kind)) exceptional(state);
-          state.stopped = statement.kind;
+          else if ("YIELD".equals(statement.kind)) boundary(statement, value, state);
+          else {
+            state.returnValue = value;
+            state.returnStatement = statement;
+          }
+          if (!"YIELD".equals(statement.kind)) state.stopped = statement.kind;
           next.add(state);
         } else if ("IF".equals(statement.kind)) {
           next.addAll(
@@ -191,7 +271,6 @@ public final class BankAnalysis {
             }
           }
         } else {
-          incomplete = true;
           state.uncertain = true;
           state.proofs.clear();
           exceptional(state);
@@ -202,16 +281,72 @@ public final class BankAnalysis {
           for (State candidate : candidates) state.vars.putAll(candidate.vars);
           next.add(state);
         }
-        if (next.size() > 64) throw new Limit();
+        if (next.size() > 64) next = compress(next);
       }
       current = next;
     }
     return current;
   }
 
+  /** Collapse excess paths conservatively, retaining later sites without certifying them. */
+  private List<State> compress(List<State> states) {
+    Map<String, State> groups = new LinkedHashMap<String, State>();
+    for (State state : states) {
+      String key =
+          state.stopped
+              + ":"
+              + (state.returnStatement == null
+                  ? ""
+                  : state.returnStatement.path + ":" + state.returnStatement.line);
+      State merged = groups.get(key);
+      if (merged == null) {
+        merged = state.copy();
+        merged.uncertain = true;
+        merged.proofs.clear();
+        merged.conditions.clear();
+        merged.epoch++;
+        groups.put(key, merged);
+      } else {
+        Set<String> names = new HashSet<String>(merged.vars.keySet());
+        names.addAll(state.vars.keySet());
+        for (String name : names)
+          merged.vars.put(name, join(merged.vars.get(name), state.vars.get(name)));
+        merged.invalidated.addAll(state.invalidated);
+        merged.epoch = Math.max(merged.epoch, state.epoch + 1);
+        merged.returnValue = join(merged.returnValue, state.returnValue);
+      }
+    }
+    if (groups.size() > 64) throw new Limit();
+    String path = currentFunction == null ? "" : currentFunction.path;
+    Map<String, Object> diagnostic =
+        Findings.diagnostic(
+            "BANK_PATHS_MERGED",
+            path,
+            "Excess local paths were conservatively merged; subsequent sites remain unknown.");
+    if (!diagnostics.contains(diagnostic)) diagnostics.add(diagnostic);
+    return new ArrayList<State>(groups.values());
+  }
+
+  private Value join(Value left, Value right) {
+    if (left != null
+        && right != null
+        && left.id.equals(right.id)
+        && left.opaque == right.opaque
+        && left.sense == right.sense
+        && Objects.equals(left.bool, right.bool)) return left;
+    Value merged = unknown(null);
+    if (left != null) inherit(merged, left);
+    if (right != null) inherit(merged, right);
+    return merged;
+  }
+
   private void exceptional(State state) {
     if (exceptionFrame != null) {
-      if (exceptionFrame.size() >= 64) throw new Limit();
+      if (exceptionFrame.size() >= 64) {
+        List<State> combined = compress(exceptionFrame);
+        exceptionFrame.clear();
+        exceptionFrame.addAll(combined);
+      }
       State copy = state.copy();
       copy.stopped = "";
       exceptionFrame.add(copy);
@@ -238,8 +373,7 @@ public final class BankAnalysis {
           for (State s : branch(expr.args.get(0), state, !desired, depth + 1))
             out.addAll(branch(expr.args.get(1), s, desired, depth + 1));
         }
-        if (out.size() > 64) throw new Limit();
-        return out;
+        return out.size() > 64 ? compress(out) : out;
       }
     }
     Value value = eval(expr, state, 0);
@@ -261,7 +395,6 @@ public final class BankAnalysis {
     if (expr == null) return unknown(null);
     if ("UNKNOWN".equals(expr.kind) && (!expr.args.isEmpty() || expr.receiver != null)) {
       state.uncertain = true;
-      incomplete = true;
     }
     if ("NAME".equals(expr.kind)) {
       Value value = state.vars.get(expr.name);
@@ -279,6 +412,7 @@ public final class BankAnalysis {
         literals.put(literalKey, known);
       }
       value.id = known;
+      value.knownLiteral = true;
       if (expr.literal instanceof Boolean) value.bool = (Boolean) expr.literal;
       return value;
     }
@@ -300,7 +434,29 @@ public final class BankAnalysis {
       eval(right, state, depth + 1);
       return unknown(expr);
     }
+    if ("MAP".equals(expr.kind)) {
+      Value map = fresh(expr);
+      map.redacted = true;
+      for (Map.Entry<String, BankFlow.Expr> member : expr.members.entrySet()) {
+        Value value = eval(member.getValue(), state, depth + 1);
+        map.members.put(member.getKey(), value);
+        map.labels.addAll(value.labels);
+        map.sensitive |= value.sensitive;
+        map.opaque |= value.opaque;
+        if (value.sensitive && !value.redacted) map.redacted = false;
+        inherit(map, value);
+      }
+      return map;
+    }
     Value receiver = expr.receiver == null ? null : eval(expr.receiver, state, depth + 1);
+    if ("MEMBER".equals(expr.kind)) {
+      if (receiver != null
+          && !state.invalidated.contains(receiver.id)
+          && receiver.members.containsKey(expr.name)) return receiver.members.get(expr.name);
+      Value unresolved = unknown(expr);
+      if (receiver != null) inherit(unresolved, receiver);
+      return unresolved;
+    }
     List<Value> args = new ArrayList<Value>();
     for (BankFlow.Expr arg : expr.args) args.add(eval(arg, state, depth + 1));
     if ("UNARY".equals(expr.kind)
@@ -336,33 +492,56 @@ public final class BankAnalysis {
         return value;
       }
     }
-    if ("CALL".equals(expr.kind)) {
-      BankPolicy.Contract contract = policy.contract(expr.symbol, args.size());
-      if (contract == null) {
-        State raised = state.copy();
-        raised.uncertain = true;
-        raised.proofs.clear();
-        raised.epoch++;
-        exceptional(raised);
-      } else exceptional(state);
+    if ("CALL".equals(expr.kind) || "NEW".equals(expr.kind)) {
+      // A decision accessor is bound to the exact object returned by that check.
+      Value projected = projection(expr, receiver, args, state);
+      if (projected != null) return projected;
+      Binding binding = bind(expr, args);
+      BankPolicy.Contract contract = binding == null ? null : binding.contract;
       if (contract != null) {
+        args = binding.args;
+        callSites.add(site(expr));
+        if (expr.bindingUncertain) candidateSites.add(site(expr));
+        exceptional(state);
+        boolean candidate = expr.bindingUncertain || "candidate".equals(contract.assurance);
         if ("source".equals(contract.kind)) {
+          if (!contract.outboundArgs.isEmpty()) {
+            State outgoing = state.copy();
+            if (candidate) outgoing.uncertain = true;
+            egress(expr, select(args, contract.outboundArgs), outgoing);
+          }
           Value value = fresh(expr);
+          value.labels.add(contract.label);
           value.sensitive = "sensitive".equals(contract.label);
-          value.trusted = "trusted-identity".equals(contract.label);
+          value.trusted = "trusted-identity".equals(contract.label) && !candidate;
           value.identityKnown = value.trusted || "untrusted-identity".equals(contract.label);
           value.trace.add(location(expr, "source", "Operator-mapped value source."));
+          if (candidate)
+            uncertain(
+                value,
+                expr.bindingUncertain ? "RECEIVER_BINDING_UNRESOLVED" : "SOURCE_NOT_QUALIFIED",
+                "Mapped source has unresolved binding or candidate semantic assurance.");
           return value;
         }
         if ("transform".equals(contract.kind)) {
-          Value value = copy(args.get(contract.arg));
-          value.id = "v" + (++serial);
-          value.opaque |= state.invalidated.contains(args.get(contract.arg).id);
-          value.redacted = true;
-          value.trusted = false;
-          value.decision = null;
-          value.bool = null;
-          append(value.trace, location(expr, "transform", "Mapped redaction return value used."));
+          Value input = contract.arg < 0 ? receiver : args.get(contract.arg);
+          if (input == null) return unknown(expr);
+          Value value = copy(input);
+          value.opaque |= state.invalidated.contains(input.id);
+          if ("redaction".equals(contract.control)) {
+            value.id = "v" + (++serial);
+            value.redacted = !candidate;
+            value.trusted = false;
+            value.decision = null;
+            value.pending = null;
+            value.bool = null;
+          }
+          if (candidate)
+            uncertain(
+                value,
+                "TRANSFORM_NOT_QUALIFIED",
+                "Candidate transformation cannot establish coverage.");
+          append(value.trace, location(expr, "transform", "Mapped returned value transformation."));
           return value;
         }
         if ("check".equals(contract.kind)) {
@@ -372,21 +551,46 @@ public final class BankAnalysis {
             Proof proof = new Proof();
             proof.key = key(contract.control, checked);
             proof.epoch = state.epoch;
+            proof.assured = !candidate;
+            proof.failureOpen = "open".equals(contract.failureMode);
+            proof.failureUnknown = "unknown".equals(contract.failureMode);
             proof.evidence =
-                location(expr, "control", "Mapped check accepted for these exact argument values.");
-            value.decision = proof;
+                location(expr, "control", "Mapped check for these exact argument values.");
             value.accepted = contract.accept;
+            if ("normal-return".equals(contract.mode)) state.proofs.put(proof.key, proof);
+            else if (!contract.decisionSymbol.isEmpty()) {
+              value.pending = contract;
+              value.pendingProof = proof;
+            } else value.decision = proof;
           } else value.opaque = true;
           return value;
         }
-        sink(contract, expr, args, state);
-        // Sinks may return results but their content and validation are not inferred.
+        State sinkState = state.copy();
+        if (candidate) sinkState.uncertain = true;
+        sink(contract, expr, args, sinkState);
         return unknown(expr);
       }
+      for (BankPolicy.Contract candidateContract : policy.contractsForSymbol(expr.symbol))
+        if ("call".equals(candidateContract.boundary)) {
+          bindingFailures.add(site(expr));
+          related(candidateContract, bindingRules);
+          break;
+        }
+      // Construction of an unrelated object cannot mutate already checked values.
+      if ("NEW".equals(expr.kind)
+          && "java.lang.Object#<init>".equals(expr.symbol)
+          && args.isEmpty()
+          && receiver == null) return unknown(expr);
+      State raised = state.copy();
+      raised.uncertain = true;
+      raised.proofs.clear();
+      raised.epoch++;
+      exceptional(raised);
       if (receiver != null) args.add(receiver);
       invalidateCall(state, args);
-      // A callback may alter input objects; no previously checked mutable value stays proven.
-      return unknown(expr);
+      Value value = unknown(expr);
+      for (Value arg : args) inherit(value, arg);
+      return value;
     }
     if ("COMPOSITE".equals(expr.kind) || "BINARY".equals(expr.kind)) {
       Value value = fresh(expr);
@@ -395,6 +599,8 @@ public final class BankAnalysis {
       for (Value arg : args) {
         value.opaque |= arg.opaque;
         value.sensitive |= arg.sensitive;
+        value.labels.addAll(arg.labels);
+        value.reasons.addAll(arg.reasons);
         if (arg.sensitive && !arg.redacted) value.redacted = false;
         for (Map<String, Object> evidence : arg.trace) append(value.trace, evidence);
       }
@@ -404,12 +610,235 @@ public final class BankAnalysis {
     return unknown(expr);
   }
 
+  private static final class Binding {
+    BankPolicy.Contract contract;
+    List<Value> args;
+  }
+
+  private Binding bind(BankFlow.Expr expr, List<Value> supplied) {
+    Binding match = null;
+    for (BankPolicy.Contract contract : policy.contractsForSymbol(expr.symbol)) {
+      if (!"call".equals(contract.boundary)) continue;
+      List<Value> normalized =
+          new ArrayList<Value>(Collections.<Value>nCopies(contract.arity, null));
+      boolean valid = supplied.size() <= contract.arity;
+      Set<String> named = new HashSet<String>();
+      boolean keyword = false;
+      for (int i = 0; valid && i < supplied.size(); i++) {
+        String name = expr.argNames.size() > i ? expr.argNames.get(i) : "";
+        int index;
+        if (name.isEmpty()) {
+          index = i;
+          if (keyword) valid = false;
+        } else {
+          keyword = true;
+          index = contract.parameterNames.indexOf(name);
+          if (!named.add(name)) valid = false;
+        }
+        if (index < 0 || index >= normalized.size() || normalized.get(index) != null) valid = false;
+        if (valid) normalized.set(index, supplied.get(i));
+      }
+      for (int i = 0; valid && i < normalized.size(); i++) {
+        if (normalized.get(i) != null) continue;
+        String name = contract.parameterNames.size() > i ? contract.parameterNames.get(i) : "";
+        if (!contract.defaults.containsKey(name)) valid = false;
+        else {
+          BankFlow.Expr literal = new BankFlow.Expr("LITERAL");
+          literal.literal = contract.defaults.get(name);
+          if (literal.literal instanceof java.math.BigDecimal) {
+            java.math.BigDecimal number = (java.math.BigDecimal) literal.literal;
+            try {
+              if (number.scale() <= 0) literal.literal = Long.valueOf(number.longValueExact());
+              else literal.kind = "UNKNOWN";
+            } catch (ArithmeticException outOfRange) {
+              literal.kind = "UNKNOWN";
+            }
+          }
+          normalized.set(i, eval(literal, new State(), 0));
+        }
+      }
+      if (!valid) continue;
+      if (match != null) return null; // An overloaded keyword/default match is ambiguous.
+      match = new Binding();
+      match.contract = contract;
+      match.args = normalized;
+    }
+    return match;
+  }
+
+  private Value projection(BankFlow.Expr expr, Value receiver, List<Value> args, State state) {
+    Value owner =
+        receiver != null && receiver.pending != null
+            ? receiver
+            : args.size() == 1 && args.get(0).pending != null ? args.get(0) : null;
+    if (owner == null) return null;
+    BankPolicy.Contract contract = owner.pending;
+    if (!contract.decisionSymbol.equals(expr.symbol)
+        || (contract.decisionArg == -1
+            ? owner != receiver || !args.isEmpty()
+            : args.size() != 1 || owner != args.get(0))) return null;
+    exceptional(state);
+    Value projected = fresh(expr);
+    projected.decision = owner.pendingProof;
+    projected.accepted = contract.accept;
+    projected.opaque =
+        owner.opaque || expr.bindingUncertain || state.invalidated.contains(owner.id);
+    projected.trace.addAll(owner.trace);
+    callSites.add(site(expr));
+    if (expr.bindingUncertain) candidateSites.add(site(expr));
+    if (projected.opaque) projected.decision = null;
+    return projected;
+  }
+
+  private void boundary(BankFlow.Stmt statement, Value returned, State state) {
+    if (currentFunction == null) return;
+    BankPolicy.Contract contract =
+        policy.contract(currentFunction.symbol, currentFunction.params.size());
+    String boundary = "YIELD".equals(statement.kind) ? "yield" : "return";
+    if (contract == null || !"sink".equals(contract.kind) || !boundary.equals(contract.boundary))
+      return;
+    BankFlow.Expr expr = new BankFlow.Expr("CALL");
+    expr.path = statement.path;
+    expr.line = statement.line;
+    expr.symbol = currentFunction.symbol;
+    List<Value> values = new ArrayList<Value>();
+    values.add(returned);
+    for (String param : currentFunction.params) {
+      Value value = state.vars.get(param);
+      values.add(value == null ? unknown(expr) : value);
+    }
+    boundarySites.add(site(expr));
+    State applied = state.copy();
+    if ("candidate".equals(contract.assurance)) applied.uncertain = true;
+    sink(contract, expr, values, applied);
+  }
+
+  private boolean relevant(BankFlow.Function function) {
+    BankPolicy.Contract contract = policy.contract(function.symbol, function.params.size());
+    return contract != null && !"call".equals(contract.boundary) || relevant(function.body, 0);
+  }
+
+  private boolean relevant(List<BankFlow.Stmt> body, int depth) {
+    if (depth > 64) return true;
+    for (BankFlow.Stmt statement : body) {
+      if (relevant(statement.expr, depth + 1)
+          || relevant(statement.body, depth + 1)
+          || relevant(statement.otherwise, depth + 1)
+          || relevant(statement.finalizer, depth + 1)) return true;
+      for (List<BankFlow.Stmt> handler : statement.handlers)
+        if (relevant(handler, depth + 1)) return true;
+    }
+    return false;
+  }
+
+  private boolean relevant(BankFlow.Expr expr, int depth) {
+    if (expr == null) return false;
+    if (depth > 64) return true;
+    if (!policy.contractsForSymbol(expr.symbol).isEmpty() || relevant(expr.receiver, depth + 1))
+      return true;
+    for (BankFlow.Expr arg : expr.args) if (relevant(arg, depth + 1)) return true;
+    for (BankFlow.Expr value : expr.members.values()) if (relevant(value, depth + 1)) return true;
+    return false;
+  }
+
+  private void markLimited(BankFlow.Function function) {
+    related(policy.contract(function.symbol, function.params.size()));
+    related(function.body, 0);
+  }
+
+  private void related(List<BankFlow.Stmt> body, int depth) {
+    if (depth > 64) {
+      limitedRules.addAll(declaredRules);
+      return;
+    }
+    for (BankFlow.Stmt statement : body) {
+      related(statement.expr, depth + 1);
+      related(statement.body, depth + 1);
+      related(statement.otherwise, depth + 1);
+      related(statement.finalizer, depth + 1);
+      for (List<BankFlow.Stmt> handler : statement.handlers) related(handler, depth + 1);
+    }
+  }
+
+  private void related(BankFlow.Expr expr, int depth) {
+    if (expr == null) return;
+    if (depth > 64) {
+      limitedRules.addAll(declaredRules);
+      return;
+    }
+    for (BankPolicy.Contract contract : policy.contractsForSymbol(expr.symbol)) related(contract);
+    related(expr.receiver, depth + 1);
+    for (BankFlow.Expr arg : expr.args) related(arg, depth + 1);
+    for (BankFlow.Expr value : expr.members.values()) related(value, depth + 1);
+  }
+
+  private void related(BankPolicy.Contract contract) {
+    related(contract, limitedRules);
+  }
+
+  private void related(BankPolicy.Contract contract, Set<String> rules) {
+    if (contract == null) return;
+    if (!contract.outboundArgs.isEmpty()
+        || "egress".equals(contract.channel)
+        || "redaction".equals(contract.control)) rules.add(BankPolicy.DATA);
+    if ("guard".equals(contract.control) || "release".equals(contract.channel))
+      rules.add(BankPolicy.GUARD);
+    if ("scope".equals(contract.control)
+        || "access".equals(contract.channel)
+        || "retrieve".equals(contract.channel)) rules.add(BankPolicy.IAM);
+    if ("doc-acl".equals(contract.control) || "retrieve".equals(contract.channel))
+      rules.add(BankPolicy.ACL);
+    if ("facts".equals(contract.control) || "recommend".equals(contract.channel))
+      rules.add(BankPolicy.FACTS);
+    if ("suitability".equals(contract.control) || "recommend".equals(contract.channel))
+      rules.add(BankPolicy.SUITABILITY);
+    if ("capability".equals(contract.control) || "tool".equals(contract.channel))
+      rules.add(BankPolicy.CAPABILITY);
+  }
+
+  private static String site(BankFlow.Expr expr) {
+    return expr.path + ":" + expr.line + ":" + expr.symbol;
+  }
+
+  private static void reason(
+      List<Map<String, Object>> reasons, String category, String code, String explanation) {
+    Map<String, Object> item =
+        Findings.map("category", category, "code", code, "explanation", explanation);
+    if (!reasons.contains(item)) reasons.add(item);
+  }
+
+  private void uncertain(Value value, String code, String explanation) {
+    value.opaque = true;
+    reason(
+        value.reasons,
+        "RECEIVER_BINDING_UNRESOLVED".equals(code) ? "UNSUPPORTED" : "INSUFFICIENT_EVIDENCE",
+        code,
+        explanation);
+  }
+
+  private void inherit(Value value, Value source) {
+    value.labels.addAll(source.labels);
+    value.sensitive |= source.sensitive;
+    for (Map<String, Object> item : source.reasons)
+      if (!value.reasons.contains(item)) value.reasons.add(item);
+    for (Map<String, Object> item : source.trace) append(value.trace, item);
+  }
+
+  private void egress(BankFlow.Expr expr, List<Value> data, State state) {
+    boolean sensitive = false, redacted = true;
+    for (Value value : data) {
+      sensitive |= value.sensitive;
+      if (value.sensitive && !value.redacted) redacted = false;
+    }
+    record(BankPolicy.DATA, expr, data, state, redacted, null, !sensitive);
+  }
+
   private void invalidateCall(State state, List<Value> args) {
     if (!state.proofs.isEmpty()) state.uncertain = true;
     state.proofs.clear();
     state.epoch++;
     Set<String> touched = new HashSet<String>();
-    for (Value arg : args) touched.add(arg.id);
+    for (Value arg : args) collectTouched(arg, touched, 0);
     state.invalidated.addAll(touched);
     for (Map.Entry<String, Value> entry : state.vars.entrySet()) {
       if (touched.contains(entry.getValue().id)) {
@@ -420,6 +849,12 @@ public final class BankAnalysis {
         entry.setValue(changed);
       }
     }
+  }
+
+  private void collectTouched(Value value, Set<String> touched, int depth) {
+    if (depth > 64) throw new Limit();
+    if (!touched.add(value.id)) return;
+    for (Value member : value.members.values()) collectTouched(member, touched, depth + 1);
   }
 
   private Value copy(Value source) {
@@ -435,6 +870,12 @@ public final class BankAnalysis {
     value.decision = source.decision;
     value.accepted = source.accepted;
     value.trace.addAll(source.trace);
+    value.labels.addAll(source.labels);
+    value.members.putAll(source.members);
+    value.reasons.addAll(source.reasons);
+    value.pending = source.pending;
+    value.pendingProof = source.pendingProof;
+    value.knownLiteral = source.knownLiteral;
     return value;
   }
 
@@ -459,22 +900,52 @@ public final class BankAnalysis {
   private void sink(
       BankPolicy.Contract contract, BankFlow.Expr expr, List<Value> args, State state) {
     List<Value> data = select(args, contract.args);
+    if (!contract.valuePath.isEmpty()) {
+      List<Value> projected = new ArrayList<Value>();
+      for (Value value : data) {
+        for (String member : contract.valuePath) {
+          Value next = state.invalidated.contains(value.id) ? null : value.members.get(member);
+          if (next == null) {
+            value = unknown(expr);
+            break;
+          }
+          value = next;
+        }
+        projected.add(value);
+      }
+      data = projected;
+    }
+    if (!contract.requiresLabel.isEmpty()) {
+      boolean relevant = false, unresolved = false;
+      for (Value value : data) {
+        relevant |= value.labels.contains(contract.requiresLabel);
+        unresolved |= value.opaque || (!value.knownLiteral && value.labels.isEmpty());
+      }
+      if (!relevant && !unresolved) return;
+      if (!relevant) {
+        state = state.copy();
+        state.uncertain = true;
+      }
+    }
     List<Value> scoped = new ArrayList<Value>();
     if (contract.identity >= 0) scoped.add(args.get(contract.identity));
     scoped.addAll(data);
     if ("egress".equals(contract.channel)) {
-      boolean sensitive = false, redacted = true;
-      for (Value value : data) {
-        sensitive |= value.sensitive;
-        if (value.sensitive && !value.redacted) redacted = false;
-      }
-      record(BankPolicy.DATA, expr, data, state, redacted, null, !sensitive);
+      egress(expr, data, state);
     } else if ("release".equals(contract.channel))
       check(BankPolicy.GUARD, "guard", expr, data, state, true);
     else if ("access".equals(contract.channel) || "retrieve".equals(contract.channel)) {
-      check(BankPolicy.IAM, "scope", expr, scoped, state, args.get(contract.identity).trusted);
-      if ("retrieve".equals(contract.channel))
-        check(BankPolicy.ACL, "doc-acl", expr, scoped, state, true);
+      if ("public".equals(contract.scope)) return;
+      if (contract.identity < 0 || "unknown".equals(contract.scope)) {
+        boolean unresolvedScope = "unknown".equals(contract.scope);
+        record(BankPolicy.IAM, expr, scoped, state, false, null, unresolvedScope);
+        if ("retrieve".equals(contract.channel))
+          record(BankPolicy.ACL, expr, scoped, state, false, null, unresolvedScope);
+      } else {
+        check(BankPolicy.IAM, "scope", expr, scoped, state, args.get(contract.identity).trusted);
+        if ("retrieve".equals(contract.channel))
+          check(BankPolicy.ACL, "doc-acl", expr, scoped, state, true);
+      }
     } else if ("recommend".equals(contract.channel)) {
       check(BankPolicy.FACTS, "facts", expr, data, state, true);
       check(
@@ -483,7 +954,7 @@ public final class BankAnalysis {
           expr,
           scoped,
           state,
-          args.get(contract.identity).trusted);
+          contract.identity >= 0 && args.get(contract.identity).trusted);
     } else if ("tool".equals(contract.channel))
       check(BankPolicy.CAPABILITY, "capability", expr, data, state, true);
   }
@@ -498,8 +969,15 @@ public final class BankAnalysis {
     Proof proof = state.proofs.get(key(control, values));
     boolean identityUnknown =
         (BankPolicy.IAM.equals(id) || BankPolicy.SUITABILITY.equals(id))
-            && !values.get(0).identityKnown;
-    record(id, expr, values, state, proof != null && extra, proof, identityUnknown);
+            && (values.isEmpty() || !values.get(0).identityKnown);
+    record(
+        id,
+        expr,
+        values,
+        state,
+        proof != null && extra && proof.assured && !proof.failureOpen && !proof.failureUnknown,
+        proof,
+        identityUnknown || (proof != null && (!proof.assured || proof.failureUnknown)));
   }
 
   private void record(
@@ -521,6 +999,24 @@ public final class BankAnalysis {
     if (!outcome.seen.add(expr.path + ":" + expr.line + ":" + disposition)) return;
     outcome.sites++;
     outcome.unknown |= unknown;
+    if (unknown) {
+      if (state.uncertain || opaque(values, state))
+        reason(
+            outcome.reasons,
+            "UNSUPPORTED",
+            "LOCAL_FLOW_UNRESOLVED",
+            "Dynamic binding, mutation, cross-function values or local control flow is not fully"
+                + " modeled.");
+      if (noClassification)
+        reason(
+            outcome.reasons,
+            "INSUFFICIENT_EVIDENCE",
+            "SEMANTIC_ASSURANCE_MISSING",
+            "Trusted identity, data scope or control failure semantics is not established.");
+      for (Value value : values)
+        for (Map<String, Object> item : value.reasons)
+          if (!outcome.reasons.contains(item)) outcome.reasons.add(item);
+    }
     outcome.violated |= "VIOLATED".equals(disposition);
     List<Map<String, Object>> chain = new ArrayList<Map<String, Object>>();
     for (Value value : values)
@@ -557,6 +1053,10 @@ public final class BankAnalysis {
   }
 
   private void finish() {
+    mappingCoverage.put("matchedCallSites", callSites.size());
+    mappingCoverage.put("matchedBoundarySites", boundarySites.size());
+    mappingCoverage.put("candidateCallSites", candidateSites.size());
+    mappingCoverage.put("argumentBindingFailures", bindingFailures.size());
     if (incomplete && diagnostics.isEmpty())
       diagnostics.add(
           Findings.diagnostic(
@@ -568,7 +1068,12 @@ public final class BankAnalysis {
       String disposition =
           outcome != null && outcome.violated
               ? "VIOLATED"
-              : outcome == null || outcome.unknown || incomplete ? "UNKNOWN" : "OBSERVED";
+              : outcome == null
+                      || outcome.unknown
+                      || limitedRules.contains(id)
+                      || bindingRules.contains(id)
+                  ? "UNKNOWN"
+                  : "OBSERVED";
       List<Map<String, Object>> evidence =
           outcome == null ? Collections.<Map<String, Object>>emptyList() : outcome.evidence;
       Map<String, Object> finding =
@@ -582,12 +1087,12 @@ public final class BankAnalysis {
                   ? "No fully mapped applicable sink was resolved; missing mappings are not a pass."
                   : "VIOLATED".equals(disposition)
                       ? "A bounded local path reaches an operator-mapped sink without its required"
-                            + " value-bound control."
+                          + " value-bound control."
                       : "UNKNOWN".equals(disposition)
                           ? "Mapped evidence exists but unresolved flow or source semantics"
-                                + " prevents a coverage conclusion."
+                              + " prevents a coverage conclusion."
                           : "The mapped local sink paths use required controls on the same values;"
-                                + " implementation semantics remain operator assumptions.",
+                              + " implementation semantics remain operator assumptions.",
               "Bind trusted API semantics and verify rejection, exception, timeout and streaming"
                   + " behavior with runtime tests.",
               evidence,
@@ -595,6 +1100,53 @@ public final class BankAnalysis {
               "Local flow only; cross-function, alias mutation and dynamic behavior may remain"
                   + " unknown.",
               "No security certification or regulatory compliance determination.");
+      if ("UNKNOWN".equals(disposition)) {
+        if (!mappingFailure.isEmpty())
+          Unknowns.set(
+              finding,
+              "MISSING_MAPPING",
+              mappingFailure,
+              "No valid operator mapping applies to this source snapshot.");
+        else if (outcome == null && bindingRules.contains(id))
+          Unknowns.set(
+              finding,
+              "UNSUPPORTED",
+              "ARGUMENT_BINDING_UNRESOLVED",
+              "A mapped API was located but its arguments could not be normalized unambiguously.");
+        else if (outcome == null && limitedRules.contains(id))
+          Unknowns.set(
+              finding,
+              "UNSUPPORTED",
+              "BANK_ANALYSIS_BOUNDED",
+              "A mapped analysis exceeded its budget before all relevant sites could be visited.");
+        else if (outcome == null)
+          Unknowns.set(
+              finding,
+              "MISSING_MAPPING",
+              "NO_RESOLVED_MAPPED_SINK",
+              "No applicable sink or output boundary was resolved with a usable semantic mapping.");
+        else {
+          for (Map<String, Object> reason : outcome.reasons)
+            Unknowns.set(
+                finding,
+                String.valueOf(reason.get("category")),
+                String.valueOf(reason.get("code")),
+                String.valueOf(reason.get("explanation")));
+          if (bindingRules.contains(id))
+            Unknowns.set(
+                finding,
+                "UNSUPPORTED",
+                "ARGUMENT_BINDING_UNRESOLVED",
+                "A mapped API was located but its arguments could not be normalized"
+                    + " unambiguously.");
+          if (limitedRules.contains(id))
+            Unknowns.set(
+                finding,
+                "UNSUPPORTED",
+                "BANK_ANALYSIS_BOUNDED",
+                "An analysis budget was reached; unvisited mapped paths remain unknown.");
+        }
+      }
       finding.put("profile", policy.profile);
       finding.put("mappedPathOutcomes", outcome == null ? 0 : outcome.sites);
       assessments.add(finding);

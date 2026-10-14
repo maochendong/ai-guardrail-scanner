@@ -23,26 +23,83 @@ public final class BankPolicy {
   private final Path source;
   private final Map<String, Contract> contracts;
 
+  public final int version;
+  private final Map<String, Receiver> receivers;
+  private final Set<String> sourceDigests;
+
+  public static final class Receiver {
+    public final String owner, field, type, assurance;
+
+    private Receiver(JsonObject o) throws IOException {
+      fields(o, set("owner", "field", "type", "assurance"), set("owner", "field", "type"));
+      owner = symbol(o, "owner", false);
+      field = identifier(string(o, "field"));
+      type = symbol(o, "type", false);
+      assurance = optionalOne(o, "assurance", "reviewed", "reviewed", "candidate");
+    }
+  }
+
   public static final class Contract {
     public final String symbol, kind, label, control, channel;
-    public final int arity, arg, identity;
-    public final List<Integer> args;
+    public final String assurance,
+        failureMode,
+        mode,
+        boundary,
+        requiresLabel,
+        scope,
+        decisionSymbol;
+    public final int arity, arg, identity, decisionArg;
+    public final List<Integer> args, outboundArgs;
+    public final List<String> parameterNames, valuePath;
+    public final Map<String, Object> defaults;
     public final boolean accept;
 
-    private Contract(JsonObject o) throws IOException {
-      symbol = string(o, "symbol");
-      if (!symbol.matches(
-              "[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+(?:#[A-Za-z_$][A-Za-z0-9_$]*)?")
-          || symbol.length() > 256) throw invalid();
+    private Contract(JsonObject o, int version) throws IOException {
+      symbol = symbol(o, "symbol", version == 2);
       arity = integer(o, "arity", 0, 32);
       kind = one(o, "kind", "source", "transform", "check", "sink");
-      Set<String> fields = new HashSet<String>(Arrays.asList("symbol", "arity", "kind"));
-      String l = "", c = "", ch = "";
-      int a = -1, i = -1;
+      Set<String> allowed = set("symbol", "arity", "kind");
+      Set<String> required = set("symbol", "arity", "kind");
+      String l = "",
+          c = "",
+          ch = "",
+          aLevel = "reviewed",
+          failure = "closed",
+          checkMode = "boolean",
+          edge = "call",
+          needs = "",
+          dataScope = "restricted",
+          decision = "";
+      int a = -1, i = -1, decisionSlot = -1;
       boolean accepted = true;
-      List<Integer> slots = new ArrayList<Integer>();
+      List<Integer> slots = new ArrayList<Integer>(), outbound = new ArrayList<Integer>();
+      List<String> names = new ArrayList<String>(), path = new ArrayList<String>();
+      Map<String, Object> defaultValues = new LinkedHashMap<String, Object>();
+      if (version == 2) {
+        allowed.addAll(set("assurance", "parameterNames", "defaults"));
+        aLevel = optionalOne(o, "assurance", "reviewed", "reviewed", "candidate");
+        failure = "unknown";
+        dataScope = "unknown";
+        if (o.has("parameterNames")) {
+          JsonArray array = array(o.get("parameterNames"));
+          if (array.size() != arity) throw invalid();
+          for (JsonElement value : array) {
+            String name = identifier(text(value));
+            if (names.contains(name)) throw invalid();
+            names.add(name);
+          }
+        }
+        if (o.has("defaults")) {
+          if (!o.has("parameterNames") || !o.get("defaults").isJsonObject()) throw invalid();
+          for (Map.Entry<String, JsonElement> value : o.getAsJsonObject("defaults").entrySet()) {
+            if (!names.contains(value.getKey())) throw invalid();
+            defaultValues.put(value.getKey(), scalar(value.getValue()));
+          }
+        }
+      }
       if ("source".equals(kind)) {
-        fields.add("label");
+        allowed.add("label");
+        required.add("label");
         l =
             one(
                 o,
@@ -54,46 +111,112 @@ public final class BankPolicy {
                 "knowledge",
                 "recommendation",
                 "tool-input");
-      } else if ("transform".equals(kind)) {
-        fields.addAll(Arrays.asList("control", "arg"));
-        c = one(o, "control", "redaction");
-        a = integer(o, "arg", 0, arity - 1);
-      } else {
-        fields.add("args");
-        JsonElement array = o.get("args");
-        if (array == null || !array.isJsonArray() || array.getAsJsonArray().size() == 0)
-          throw invalid();
-        for (JsonElement slot : array.getAsJsonArray()) {
-          int s = number(slot, 0, arity - 1);
-          if (slots.contains(s)) throw invalid();
-          slots.add(s);
+        if (version == 2) {
+          allowed.add("outboundArgs");
+          if (o.has("outboundArgs")) outbound = slots(o.get("outboundArgs"), arity - 1, true);
         }
+      } else if ("transform".equals(kind)) {
+        allowed.addAll(set("control", "arg"));
+        required.addAll(set("control", "arg"));
+        c =
+            version == 1
+                ? one(o, "control", "redaction")
+                : one(o, "control", "redaction", "preserve");
+        a = integer(o, "arg", version == 2 && "preserve".equals(c) ? -1 : 0, arity - 1);
+      } else {
+        allowed.add("args");
+        required.add("args");
         if ("check".equals(kind)) {
-          fields.addAll(Arrays.asList("control", "accept"));
+          allowed.addAll(set("control", "accept"));
+          required.add("control");
           c = one(o, "control", "guard", "scope", "facts", "suitability", "doc-acl", "capability");
-          JsonElement acceptElement = o.get("accept");
-          if (acceptElement == null
-              || !acceptElement.isJsonPrimitive()
-              || !acceptElement.getAsJsonPrimitive().isBoolean()) throw invalid();
-          accepted = acceptElement.getAsBoolean();
+          if (version == 2) {
+            allowed.addAll(set("failureMode", "mode", "decision"));
+            failure = optionalOne(o, "failureMode", "unknown", "closed", "open", "unknown");
+            checkMode = optionalOne(o, "mode", "boolean", "boolean", "normal-return");
+            if (o.has("decision")) {
+              if (!"boolean".equals(checkMode) || !o.get("decision").isJsonObject())
+                throw invalid();
+              JsonObject choice = o.getAsJsonObject("decision");
+              keys(choice, set("symbol", "arg"));
+              decision = symbol(choice, "symbol", false);
+              decisionSlot = integer(choice, "arg", -1, 0);
+            }
+          }
+          if (version == 1 || "boolean".equals(checkMode)) required.add("accept");
+          if (o.has("accept")) {
+            JsonElement value = o.get("accept");
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean())
+              throw invalid();
+            accepted = value.getAsBoolean();
+            if ("normal-return".equals(checkMode) && !accepted) throw invalid();
+          }
+          slots = slots(o.get("args"), arity - 1, false);
         } else {
-          fields.add("channel");
+          allowed.add("channel");
+          required.add("channel");
           ch = one(o, "channel", "egress", "access", "release", "recommend", "retrieve", "tool");
+          if (version == 2) {
+            allowed.addAll(set("boundary", "requiresLabel", "valuePath", "scope"));
+            edge = optionalOne(o, "boundary", "call", "call", "return", "yield");
+            dataScope = optionalOne(o, "scope", "unknown", "restricted", "public", "unknown");
+            if (o.has("requiresLabel"))
+              needs =
+                  one(
+                      o,
+                      "requiresLabel",
+                      "sensitive",
+                      "trusted-identity",
+                      "untrusted-identity",
+                      "model-output",
+                      "knowledge",
+                      "recommendation",
+                      "tool-input");
+            if (o.has("valuePath")) {
+              JsonArray elements = array(o.get("valuePath"));
+              if (elements.size() > 16) throw invalid();
+              for (JsonElement element : elements) {
+                String name = text(element);
+                if (name.length() == 0 || name.length() > 128) throw invalid();
+                path.add(name);
+              }
+            }
+          }
+          int max = "call".equals(edge) ? arity - 1 : arity;
+          boolean empty =
+              version == 2
+                  && arity == 0
+                  && "call".equals(edge)
+                  && ("access".equals(ch) || "retrieve".equals(ch));
+          slots = slots(o.get("args"), max, empty);
           if (Arrays.asList("access", "recommend", "retrieve").contains(ch)) {
-            fields.add("identity");
-            i = integer(o, "identity", 0, arity - 1);
-            if (slots.contains(i)) throw invalid();
+            allowed.add("identity");
+            required.add("identity");
+            i = integer(o, "identity", version == 2 ? -1 : 0, max);
+            if (i >= 0 && slots.contains(i)) throw invalid();
           }
         }
       }
-      keys(o, fields);
+      fields(o, allowed, required);
       label = l;
       control = c;
       channel = ch;
       arg = a;
       identity = i;
       accept = accepted;
+      assurance = aLevel;
+      failureMode = failure;
+      mode = checkMode;
+      boundary = edge;
+      requiresLabel = needs;
+      scope = dataScope;
+      decisionSymbol = decision;
+      decisionArg = decisionSlot;
       args = Collections.unmodifiableList(slots);
+      outboundArgs = Collections.unmodifiableList(outbound);
+      parameterNames = Collections.unmodifiableList(names);
+      valuePath = Collections.unmodifiableList(path);
+      defaults = Collections.unmodifiableMap(defaultValues);
     }
   }
 
@@ -101,24 +224,54 @@ public final class BankPolicy {
     if (!Arrays.asList("generic", "bank-common", "bank-customer", "bank-internal", "bank-all")
         .contains(profile)) throw invalid();
     if (json.getBytes(StandardCharsets.UTF_8).length > 65536) throw invalid();
-    JsonElement parsed = Json.parse(json);
+    JsonElement parsed;
+    try {
+      parsed = Json.parse(json);
+    } catch (IOException error) {
+      throw invalid();
+    } catch (IllegalArgumentException error) {
+      throw invalid();
+    }
     if (!parsed.isJsonObject()) throw invalid();
     JsonObject o = parsed.getAsJsonObject();
-    keys(o, new HashSet<String>(Arrays.asList("version", "contracts")));
-    if (integer(o, "version", 1, 1) != 1) throw invalid();
-    JsonElement items = o.get("contracts");
-    if (items == null || !items.isJsonArray() || items.getAsJsonArray().size() > 256)
-      throw invalid();
+    version = integer(o, "version", 1, 2);
+    if (version == 1) keys(o, set("version", "contracts"));
+    else fields(o, set("version", "contracts", "receivers", "sourceDigests"), set("version"));
+    JsonArray items = o.has("contracts") ? array(o.get("contracts")) : new JsonArray();
+    if (items.size() > 256) throw invalid();
     Map<String, Contract> loaded = new LinkedHashMap<String, Contract>();
-    for (JsonElement item : items.getAsJsonArray()) {
+    for (JsonElement item : items) {
       if (!item.isJsonObject()) throw invalid();
-      Contract contract = new Contract(item.getAsJsonObject());
+      Contract contract = new Contract(item.getAsJsonObject(), version);
       if (loaded.put(contract.symbol + "/" + contract.arity, contract) != null) throw invalid();
     }
-    if ("generic".equals(profile) && !loaded.isEmpty()) throw invalid();
+    Map<String, Receiver> receiverBindings = new LinkedHashMap<String, Receiver>();
+    if (o.has("receivers")) {
+      JsonArray bindings = array(o.get("receivers"));
+      if (bindings.size() > 128) throw invalid();
+      for (JsonElement binding : bindings) {
+        if (!binding.isJsonObject()) throw invalid();
+        Receiver receiver = new Receiver(binding.getAsJsonObject());
+        if (receiverBindings.put(receiver.owner + "#" + receiver.field, receiver) != null)
+          throw invalid();
+      }
+    }
+    Set<String> boundDigests = new LinkedHashSet<String>();
+    if (o.has("sourceDigests")) {
+      JsonArray hashes = array(o.get("sourceDigests"));
+      if (hashes.size() > 16 || hashes.size() == 0) throw invalid();
+      for (JsonElement hash : hashes) {
+        String value = text(hash);
+        if (!value.matches("[0-9a-f]{64}") || !boundDigests.add(value)) throw invalid();
+      }
+    }
+    if ("generic".equals(profile) && (!loaded.isEmpty() || !receiverBindings.isEmpty()))
+      throw invalid();
     this.profile = profile;
     this.source = source;
     contracts = Collections.unmodifiableMap(loaded);
+    receivers = Collections.unmodifiableMap(receiverBindings);
+    sourceDigests = Collections.unmodifiableSet(boundDigests);
     try {
       byte[] hash =
           MessageDigest.getInstance("SHA-256")
@@ -186,6 +339,25 @@ public final class BankPolicy {
     return contracts.get(symbol + "/" + arity);
   }
 
+  public List<Contract> contractsForSymbol(String symbol) {
+    List<Contract> found = new ArrayList<Contract>();
+    for (Contract contract : contracts.values())
+      if (contract.symbol.equals(symbol)) found.add(contract);
+    return Collections.unmodifiableList(found);
+  }
+
+  public Receiver receiver(String owner, String field) {
+    return receivers.get(owner + "#" + field);
+  }
+
+  public boolean matchesSourceDigest(String digest) {
+    return sourceDigests.isEmpty() || sourceDigests.contains(digest);
+  }
+
+  public Collection<Contract> allContracts() {
+    return Collections.unmodifiableCollection(contracts.values());
+  }
+
   public int contractCount() {
     return contracts.size();
   }
@@ -206,11 +378,17 @@ public final class BankPolicy {
         "profile",
         profile,
         "version",
-        "bank-policy-v1",
+        "bank-policy-v" + version,
         "digest",
         digest,
         "contractCount",
         contracts.size(),
+        "receiverCount",
+        receivers.size(),
+        "bindingCount",
+        contracts.size() + receivers.size(),
+        "sourceDigestCount",
+        sourceDigests.size(),
         "semantics",
         "operator-declared contracts; implementations not verified");
   }
@@ -259,9 +437,78 @@ public final class BankPolicy {
   }
 
   private static void keys(JsonObject object, Set<String> allowed) throws IOException {
+    fields(object, allowed, allowed);
+  }
+
+  private static void fields(JsonObject object, Set<String> allowed, Set<String> required)
+      throws IOException {
     for (Map.Entry<String, JsonElement> entry : object.entrySet())
       if (!allowed.contains(entry.getKey())) throw invalid();
-    for (String key : allowed) if (!object.has(key)) throw invalid();
+    for (String key : required) if (!object.has(key)) throw invalid();
+  }
+
+  private static Set<String> set(String... keys) {
+    return new HashSet<String>(Arrays.asList(keys));
+  }
+
+  private static JsonArray array(JsonElement value) throws IOException {
+    if (value == null || !value.isJsonArray()) throw invalid();
+    return value.getAsJsonArray();
+  }
+
+  private static String text(JsonElement value) throws IOException {
+    if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString())
+      throw invalid();
+    return value.getAsString();
+  }
+
+  private static String identifier(String value) throws IOException {
+    if (!value.matches("[A-Za-z_$][A-Za-z0-9_$]*") || value.length() > 128) throw invalid();
+    return value;
+  }
+
+  private static String symbol(JsonObject object, String key, boolean constructor)
+      throws IOException {
+    String value = string(object, key);
+    String member =
+        constructor ? "(?:[A-Za-z_$][A-Za-z0-9_$]*|<init>)" : "[A-Za-z_$][A-Za-z0-9_$]*";
+    if (!value.matches(
+            "[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+(?:#" + member + ")?")
+        || value.length() > 256) throw invalid();
+    return value;
+  }
+
+  private static Object scalar(JsonElement value) throws IOException {
+    if (value.isJsonNull()) return null;
+    if (!value.isJsonPrimitive()) throw invalid();
+    JsonPrimitive primitive = value.getAsJsonPrimitive();
+    if (primitive.isBoolean()) return primitive.getAsBoolean();
+    if (primitive.isString()) return primitive.getAsString();
+    if (primitive.isNumber()) {
+      try {
+        return primitive.getAsBigDecimal();
+      } catch (NumberFormatException error) {
+        throw invalid();
+      }
+    }
+    throw invalid();
+  }
+
+  private static List<Integer> slots(JsonElement value, int max, boolean empty) throws IOException {
+    JsonArray items = array(value);
+    if (!empty && items.size() == 0 || items.size() > 33) throw invalid();
+    List<Integer> out = new ArrayList<Integer>();
+    for (JsonElement item : items) {
+      int slot = number(item, 0, max);
+      if (out.contains(slot)) throw invalid();
+      out.add(slot);
+    }
+    return out;
+  }
+
+  private static String optionalOne(JsonObject o, String key, String fallback, String... values)
+      throws IOException {
+    return o.has(key) ? one(o, key, values) : fallback;
   }
 
   private static String string(JsonObject object, String key) throws IOException {
@@ -288,6 +535,8 @@ public final class BankPolicy {
       if (result < min || result > max) throw invalid();
       return result;
     } catch (ArithmeticException error) {
+      throw invalid();
+    } catch (NumberFormatException error) {
       throw invalid();
     }
   }

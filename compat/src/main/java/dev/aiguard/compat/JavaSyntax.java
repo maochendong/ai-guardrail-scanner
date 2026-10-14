@@ -681,7 +681,10 @@ public final class JavaSyntax {
           }
         } else {
           ParserRuleContext array = child(creator, "arrayCreatorRest");
-          if (array != null) populate(array, n, owner, method, depth + 1);
+          if (array != null) {
+            n.modifiers.add("array");
+            populate(array, n, owner, method, depth + 1);
+          }
         }
         return n;
       }
