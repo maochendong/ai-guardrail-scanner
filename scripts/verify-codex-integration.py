@@ -5,16 +5,31 @@ import subprocess,json,threading,queue,time,tomllib,argparse,os
 parser=argparse.ArgumentParser(description='Verify an installed scanner through an actual ephemeral Codex app-server thread.')
 parser.add_argument('--project',type=Path,action='append',required=True)
 parser.add_argument('--output',type=Path,required=True)
+parser.add_argument('--profile',choices=['generic','bank-common','bank-customer','bank-internal','bank-all'],default='generic')
+parser.add_argument('--bank-policy',type=Path)
 parser.add_argument('--expect-java-functions',action='store_true')
 parser.add_argument('--expect-python-rag',action='store_true')
 parser.add_argument('--require-python-parse-success',action='store_true')
 parser.add_argument('--require-resolved-python-clients',action='store_true')
 parser.add_argument('--expect-python-guard-results',action='store_true')
 args=parser.parse_args()
+if args.bank_policy is not None:
+    args.bank_policy=args.bank_policy.resolve()
+    assert args.bank_policy.is_file(),args.bank_policy
 ROOT=Path(__file__).resolve().parent.parent
 OUT=args.output.resolve()
 OUT.mkdir(parents=True,exist_ok=True)
 config=tomllib.loads((Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))/'config.toml').read_text())
+installed_args=config.get('mcp_servers',{}).get('ai-guardrail-scanner',{}).get('args',[])
+def installed_option(name):
+    assert installed_args.count(name)<=1,('Duplicate configured scanner option',name)
+    if name not in installed_args:return None
+    index=installed_args.index(name)
+    assert index+1<len(installed_args),('Missing configured scanner option value',name)
+    return installed_args[index+1]
+assert (installed_option('--profile') or 'generic')==args.profile,'Configured scanner profile differs from --profile'
+installed_policy=installed_option('--bank-policy')
+assert (Path(installed_policy).resolve() if installed_policy is not None else None)==args.bank_policy,'Configured scanner policy differs from --bank-policy'
 cmd=['codex','app-server','--stdio']
 for name in config.get('mcp_servers',{}):
     if name!='ai-guardrail-scanner':cmd+=['-c','mcp_servers.'+name+'.enabled=false']
@@ -48,9 +63,29 @@ def tool(name,args,expect_error=False):
     value=json.loads(next(c['text'] for c in result['content'] if c.get('type')=='text'))
     transcript.append({'tool':name,'arguments':args,'isError':bool(result.get('isError')),'result':value})
     return value
-transcript=[];summary={}
+def stable_report(report):
+    return {key:report[key] for key in ['schemaVersion','ruleSetVersion','sourceDigest','project',
+            'complete','securityVerified','policy','gateDecision','assessments','diagnostics']}
+def expected_ids(rules,languages,profile):
+    ids={r['id'] for r in rules if
+         (r['id'].startswith('AI-PY-') and 'python' in languages) or
+         (r['id'].startswith('AI-') and not r['id'].startswith('AI-PY-') and 'java' in languages)}
+    if profile!='generic':ids.update(['BANK-DATA-001','BANK-IAM-001','BANK-GUARD-001'])
+    if profile in ['bank-customer','bank-all']:ids.update(['BANK-CUST-001','BANK-CUST-002'])
+    if profile in ['bank-internal','bank-all']:ids.update(['BANK-INTERNAL-001','BANK-INTERNAL-002'])
+    return ids
+def verify_policy(report):
+    assert report['complete'] is False and report['securityVerified'] is False
+    assert report['policy']['profile']==args.profile
+    assert report['policy']['version']=='bank-policy-v1'
+    digest=report['policy']['digest']
+    assert len(digest)==64 and all(c in '0123456789abcdef' for c in digest)
+    contracts=json.loads(args.bank_policy.read_text())['contracts'] if args.bank_policy is not None else []
+    assert report['policy']['contractCount']==len(contracts)
+    assert report['gateDecision']==('BLOCK' if any(a['disposition']=='VIOLATED' for a in report['assessments']) else 'REVIEW')
+transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.3.1'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.4.0'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -62,11 +97,11 @@ try:
     print('MCP discovery:',server.get('runtimeStatus'),list(server['tools']),flush=True)
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
-    assert len(rules)==26
-    assert server['serverInfo']['version']=='0.3.1'
+    assert len(rules)==len({r['id'] for r in rules})==33
+    assert server['serverInfo']['version']=='0.4.0'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
-    summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
+    summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
     for project in args.project:
         name,path=project.name,str(project.resolve())
         t=time.monotonic();s=tool('guardrail_scan_start',{'repository':path});scanid=s['scanId'];states=[s['state']]
@@ -80,14 +115,17 @@ try:
             assert not r['contentOmitted'],(name,fmt)
             assert Path(r['artifacts'][fmt]).read_text()==r['content']
         report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
-        assert report['schemaVersion']=='1.2'
-        assert report['ruleSetVersion']=='java-python-guardrail-v3.1'
-        assert report['runtime']['scannerVersion']=='0.3.1'
+        assert report['schemaVersion']=='1.3'
+        assert report['ruleSetVersion']=='java-python-guardrail-v4'
+        assert report['runtime']['scannerVersion']=='0.4.0'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
-        assert report['securityVerified'] is False
+        verify_policy(report)
+        assert s['policy']==report['policy']
+        assert s['gateDecision']==report['gateDecision']
         if args.require_python_parse_success:
             assert not any(d['code'] in ['PYTHON_PARSE_FAILED','PYTHON_PARSE_DEPTH',
-                                        'PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics']),name
+                                        'PYTHON_ANALYSIS_LIMIT','BANK_PYTHON_PARSE_FAILED',
+                                        'BANK_PYTHON_ANALYSIS_DEPTH','BANK_PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics']),name
         if args.require_resolved_python_clients and report['project']['languages']==['python']:
             assert not any(d['code']=='PYTHON_UNRESOLVED_MODEL_CALL' for d in report['diagnostics']),name
         if args.expect_python_guard_results and report['project']['languages']==['python']:
@@ -95,10 +133,7 @@ try:
                        and 'consumer-result' in a['explanation'] for a in report['assessments']),name
         assert {a['ruleId'] for a in sarif['runs'][0]['results']}=={
             a['ruleId'] for a in report['assessments'] if a['disposition']=='VIOLATED'}
-        expected_ids={r['id'] for r in rules if
-            (r['id'].startswith('AI-PY-') and 'python' in report['project']['languages']) or
-            (not r['id'].startswith('AI-PY-') and 'java' in report['project']['languages'])}
-        assert {a['ruleId'] for a in report['assessments']}==expected_ids
+        assert {a['ruleId'] for a in report['assessments']}==expected_ids(rules,report['project']['languages'],args.profile)
         if args.expect_java_functions and 'java' in report['project']['languages']:
             for rule in ['AI-GW-001','AI-FC-001','AI-FC-002','AI-FC-003']:
                 assert any(a['ruleId']==rule and a['disposition']=='OBSERVED' for a in report['assessments']),(name,rule)
@@ -107,14 +142,19 @@ try:
                 assert any(a['ruleId']==rule and a['disposition']=='OBSERVED' for a in report['assessments']),(name,rule)
             assert not any(d['code'] in ['PYTHON_PARSE_FAILED','PYTHON_FLOW_LIMIT','PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics'])
         assert sarif['runs'][0]['properties']['project']==report['project']
+        assert sarif['runs'][0]['properties']['policy']==report['policy']
+        assert sarif['runs'][0]['properties']['gateDecision']==report['gateDecision']
+        assert sarif['runs'][0]['properties']['securityVerified'] is False
+        stable_reports[path]=stable_report(report)
         assert {a['domain'] for a in report['assessments']}=={'L'+str(i) for i in range(1,8)}
         terminal=tool('guardrail_scan_cancel',{'scanId':scanid});assert terminal==s
-        row={'name':name,'repository':path,'scanId':scanid,'states':states,'seconds':round(time.monotonic()-t,3),'status':s,'project':report['project'],'runtime':report['runtime'],'dispositions':{d:sum(a['disposition']==d for a in report['assessments']) for d in ['VIOLATED','OBSERVED','UNKNOWN','NOT_APPLICABLE']},'diagnostics':report['diagnostics'],'sourceDigest':report['sourceDigest'],'artifacts':results['json']['artifacts'],'reportFormatsVerified':True,'terminalStateImmutable':True}
+        row={'name':name,'repository':path,'scanId':scanid,'states':states,'seconds':round(time.monotonic()-t,3),'status':s,'project':report['project'],'runtime':report['runtime'],'dispositions':{d:sum(a['disposition']==d for a in report['assessments']) for d in ['VIOLATED','OBSERVED','UNKNOWN','NOT_APPLICABLE']},'diagnostics':report['diagnostics'],'sourceDigest':report['sourceDigest'],'policy':report['policy'],'gateDecision':report['gateDecision'],'artifacts':results['json']['artifacts'],'reportFormatsVerified':True,'terminalStateImmutable':True}
         summary['projects'].append(row)
         print(json.dumps({k:v for k,v in row.items() if k not in ['diagnostics','artifacts']},ensure_ascii=False),flush=True)
     summary['passed']=True
 finally:
     (OUT/'mcp-tool-transcript.json').write_text(json.dumps(transcript,ensure_ascii=False,indent=2)+'\n')
+    (OUT/'stable-reports.json').write_text(json.dumps(stable_reports,ensure_ascii=False,indent=2)+'\n')
     (OUT/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')
     if p.poll() is None:
         p.stdin.close()

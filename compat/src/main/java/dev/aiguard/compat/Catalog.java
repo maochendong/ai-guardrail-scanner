@@ -22,6 +22,7 @@ public final class Catalog {
   public static List<Map<String, Object>> all() {
     List<Map<String, Object>> rules = new ArrayList<Map<String, Object>>(javaRules());
     rules.addAll(PythonAnalysis.catalog());
+    rules.addAll(BankPolicy.catalog());
     return rules;
   }
 }

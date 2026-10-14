@@ -30,12 +30,17 @@ public final class ScanService implements AutoCloseable {
   }
 
   public ScanService(List<Path> roots, Path output) throws IOException {
+    this(roots, output, BankPolicy.generic());
+  }
+
+  public ScanService(List<Path> roots, Path output, final BankPolicy bankPolicy)
+      throws IOException {
     this(
         roots,
         output,
         new Task() {
           public Map<String, Object> scan(Path root, String id, Cancel cancel) throws Exception {
-            return new Scanner().scan(root, id, cancel);
+            return new Scanner().scan(root, id, cancel, bankPolicy);
           }
         },
         120000,
@@ -151,6 +156,10 @@ public final class ScanService implements AutoCloseable {
         job.error,
         "coverageComplete",
         false,
+        "gateDecision",
+        job.report == null ? "REVIEW" : job.report.get("gateDecision"),
+        "policy",
+        job.report == null ? null : job.report.get("policy"),
         "violations",
         job.report == null ? 0 : Scanner.count(job.report, "VIOLATED"),
         "unknowns",

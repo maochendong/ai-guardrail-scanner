@@ -1,0 +1,347 @@
+{
+  "version": 1,
+  "contracts": [
+    {
+      "symbol": "org.example.bank.Port#sensitiveData",
+      "arity": 0,
+      "kind": "source",
+      "label": "sensitive"
+    },
+    {
+      "symbol": "org.example.bank.Port#trustedIdentity",
+      "arity": 0,
+      "kind": "source",
+      "label": "trusted-identity"
+    },
+    {
+      "symbol": "org.example.bank.Port#untrustedIdentity",
+      "arity": 0,
+      "kind": "source",
+      "label": "untrusted-identity"
+    },
+    {
+      "symbol": "org.example.bank.Port#modelOutput",
+      "arity": 0,
+      "kind": "source",
+      "label": "model-output"
+    },
+    {
+      "symbol": "org.example.bank.Port#knowledge",
+      "arity": 0,
+      "kind": "source",
+      "label": "knowledge"
+    },
+    {
+      "symbol": "org.example.bank.Port#recommendation",
+      "arity": 0,
+      "kind": "source",
+      "label": "recommendation"
+    },
+    {
+      "symbol": "org.example.bank.Port#toolInput",
+      "arity": 0,
+      "kind": "source",
+      "label": "tool-input"
+    },
+    {
+      "symbol": "org.example.bank.Port#redact",
+      "arity": 1,
+      "kind": "transform",
+      "control": "redaction",
+      "arg": 0
+    },
+    {
+      "symbol": "org.example.bank.Port#scopeAllowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "scope",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "org.example.bank.Port#guardRejected",
+      "arity": 1,
+      "kind": "check",
+      "control": "guard",
+      "args": [
+        0
+      ],
+      "accept": false
+    },
+    {
+      "symbol": "org.example.bank.Port#factsCurrent",
+      "arity": 1,
+      "kind": "check",
+      "control": "facts",
+      "args": [
+        0
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "org.example.bank.Port#suitabilityAllowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "suitability",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "org.example.bank.Port#documentAllowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "doc-acl",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "org.example.bank.Port#capabilityAllowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "capability",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "org.example.bank.Port#send",
+      "arity": 1,
+      "kind": "sink",
+      "channel": "egress",
+      "args": [
+        0
+      ]
+    },
+    {
+      "symbol": "org.example.bank.Port#access",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "access",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "org.example.bank.Port#release",
+      "arity": 1,
+      "kind": "sink",
+      "channel": "release",
+      "args": [
+        0
+      ]
+    },
+    {
+      "symbol": "org.example.bank.Port#recommend",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "recommend",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "org.example.bank.Port#retrieve",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "retrieve",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "org.example.bank.Port#execute",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "tool",
+      "args": [
+        0,
+        1
+      ]
+    },
+    {
+      "symbol": "example_port.sensitive_data",
+      "arity": 0,
+      "kind": "source",
+      "label": "sensitive"
+    },
+    {
+      "symbol": "example_port.trusted_identity",
+      "arity": 0,
+      "kind": "source",
+      "label": "trusted-identity"
+    },
+    {
+      "symbol": "example_port.untrusted_identity",
+      "arity": 0,
+      "kind": "source",
+      "label": "untrusted-identity"
+    },
+    {
+      "symbol": "example_port.model_output",
+      "arity": 0,
+      "kind": "source",
+      "label": "model-output"
+    },
+    {
+      "symbol": "example_port.knowledge",
+      "arity": 0,
+      "kind": "source",
+      "label": "knowledge"
+    },
+    {
+      "symbol": "example_port.recommendation",
+      "arity": 0,
+      "kind": "source",
+      "label": "recommendation"
+    },
+    {
+      "symbol": "example_port.tool_input",
+      "arity": 0,
+      "kind": "source",
+      "label": "tool-input"
+    },
+    {
+      "symbol": "example_port.redact",
+      "arity": 1,
+      "kind": "transform",
+      "control": "redaction",
+      "arg": 0
+    },
+    {
+      "symbol": "example_port.scope_allowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "scope",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "example_port.guard_rejected",
+      "arity": 1,
+      "kind": "check",
+      "control": "guard",
+      "args": [
+        0
+      ],
+      "accept": false
+    },
+    {
+      "symbol": "example_port.facts_current",
+      "arity": 1,
+      "kind": "check",
+      "control": "facts",
+      "args": [
+        0
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "example_port.suitability_allowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "suitability",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "example_port.document_allowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "doc-acl",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "example_port.capability_allowed",
+      "arity": 2,
+      "kind": "check",
+      "control": "capability",
+      "args": [
+        0,
+        1
+      ],
+      "accept": true
+    },
+    {
+      "symbol": "example_port.send",
+      "arity": 1,
+      "kind": "sink",
+      "channel": "egress",
+      "args": [
+        0
+      ]
+    },
+    {
+      "symbol": "example_port.access",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "access",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "example_port.release",
+      "arity": 1,
+      "kind": "sink",
+      "channel": "release",
+      "args": [
+        0
+      ]
+    },
+    {
+      "symbol": "example_port.recommend",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "recommend",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "example_port.retrieve",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "retrieve",
+      "args": [
+        1
+      ],
+      "identity": 0
+    },
+    {
+      "symbol": "example_port.execute",
+      "arity": 2,
+      "kind": "sink",
+      "channel": "tool",
+      "args": [
+        0,
+        1
+      ]
+    }
+  ]
+}

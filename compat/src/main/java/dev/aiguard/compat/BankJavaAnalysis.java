@@ -1,0 +1,327 @@
+package dev.aiguard.compat;
+
+import dev.aiguard.compat.JavaSyntax.Method;
+import dev.aiguard.compat.JavaSyntax.Node;
+import dev.aiguard.compat.JavaSyntax.Param;
+import dev.aiguard.compat.JavaSyntax.Unit;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** Adapts the existing Java syntax graph; it never executes or loads target classes. */
+public final class BankJavaAnalysis {
+  private final JavaGraph graph;
+  private final Cancel cancel;
+  private final BankFlow.Program program = new BankFlow.Program();
+  private final Set<String> diagnostics = new HashSet<String>();
+  private int remaining = 150000;
+
+  private BankJavaAnalysis(JavaGraph graph, Cancel cancel) {
+    this.graph = graph;
+    this.cancel = cancel;
+  }
+
+  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
+    List<Unit> units = new ArrayList<Unit>();
+    for (SourceFile file : files) {
+      cancel.check();
+      if (file.path.endsWith(".java")) units.add(JavaSyntax.parse(file, cancel));
+    }
+    return adapt(new JavaGraph(units, cancel), cancel);
+  }
+
+  public static BankFlow.Program adapt(JavaGraph graph, Cancel cancel) {
+    return new BankJavaAnalysis(graph, cancel).run();
+  }
+
+  private BankFlow.Program run() {
+    for (Unit unit : graph.units) {
+      cancel.check();
+      if (unit.syntaxErrors > 0 || unit.root == null)
+        diagnostic(
+            "BANK_JAVA_PARSE_INCOMPLETE",
+            unit.path,
+            "Java syntax is unavailable; banking controls in this file remain unknown.");
+    }
+    for (Method method : graph.methods()) {
+      cancel.check();
+      BankFlow.Function function = new BankFlow.Function();
+      function.path = method.node.unit.path;
+      function.line = method.line;
+      function.symbol = method.owner.qualifiedName + "#" + method.name;
+      for (Param param : method.params) function.params.add(key(param.node));
+      program.functions.add(function);
+      try {
+        if (method.rootNode == null) function.body.add(statement("UNKNOWN", method.node));
+        else statements(method.rootNode, function.body, method, 0);
+      } catch (Limit exhausted) {
+        function.body.clear();
+        function.body.add(statement("UNKNOWN", method.node));
+        diagnostic(
+            "BANK_JAVA_ADAPTER_LIMIT",
+            function.path,
+            "Java banking adaptation reached its node or depth budget; remaining flow is unknown.");
+        break;
+      } catch (StackOverflowError exhausted) {
+        function.body.clear();
+        function.body.add(statement("UNKNOWN", method.node));
+        diagnostic(
+            "BANK_JAVA_ADAPTER_DEPTH",
+            function.path,
+            "Java banking adaptation exceeded its supported nesting depth; remaining flow is"
+                + " unknown.");
+        break;
+      }
+    }
+    for (Map<String, Object> item : graph.diagnostics())
+      diagnostic(
+          "BANK_JAVA_BINDING_INCOMPLETE",
+          String.valueOf(item.get("path")),
+          "Java declaration binding is incomplete; ambiguous banking API symbols remain unknown.");
+    return program;
+  }
+
+  private void tick(int depth) {
+    cancel.check();
+    if (--remaining < 0 || depth > 128) throw new Limit();
+  }
+
+  private void diagnostic(String code, String path, String message) {
+    if (diagnostics.size() < 128 && diagnostics.add(code + ":" + path))
+      program.diagnostics.add(Findings.diagnostic(code, path, message));
+  }
+
+  private void statements(Node node, List<BankFlow.Stmt> out, Method method, int depth) {
+    if (node == null || node.method != method) return;
+    tick(depth);
+    if (node.kind.equals("BLOCK")) {
+      for (Node child : node.children) statements(child, out, method, depth + 1);
+      return;
+    }
+    if (node.kind.equals("VAR")) {
+      BankFlow.Stmt result = statement("ASSIGN", node);
+      result.target = key(node);
+      result.expr = expression(node.initializer, depth + 1);
+      out.add(result);
+      return;
+    }
+    if (node.kind.equals("IF")) {
+      BankFlow.Stmt result = statement("IF", node);
+      result.expr = expression(node.condition, depth + 1);
+      statements(node.thenBranch, result.body, method, depth + 1);
+      statements(node.elseBranch, result.otherwise, method, depth + 1);
+      out.add(result);
+      return;
+    }
+    if (node.kind.equals("RETURN") || node.kind.equals("THROW")) {
+      BankFlow.Stmt result = statement(node.kind, node);
+      if (!node.args.isEmpty()) result.expr = expression(node.args.get(0), depth + 1);
+      out.add(result);
+      return;
+    }
+    if (node.kind.equals("TRY")) {
+      BankFlow.Stmt result = statement("TRY", node);
+      for (Node child : node.children) {
+        if (child.kind.equals("CATCH")) {
+          List<BankFlow.Stmt> handler = new ArrayList<BankFlow.Stmt>();
+          for (Node body : child.children)
+            if (!body.kind.equals("PARAM")) statements(body, handler, method, depth + 1);
+          result.handlers.add(handler);
+        } else if (child.kind.equals("FINALLY")) {
+          for (Node body : child.children) statements(body, result.finalizer, method, depth + 1);
+        } else statements(child, result.body, method, depth + 1);
+      }
+      out.add(result);
+      return;
+    }
+    if (node.kind.equals("ASSIGN")) {
+      Node declaration = graph.declaration(node.receiver);
+      if (local(declaration) && node.args.size() == 2) {
+        BankFlow.Stmt result = statement("ASSIGN", node);
+        result.target = key(declaration);
+        result.expr = expression(node.initializer, depth + 1);
+        if (!node.name.equals("=")) {
+          BankFlow.Expr combination = expr("UNKNOWN", node);
+          combination.args.add(expression(node.receiver, depth + 1));
+          combination.args.add(result.expr);
+          result.expr = combination;
+        }
+        out.add(result);
+        return;
+      }
+    }
+    if (node.kind.equals("EXPR_STMT")
+        && node.children.size() == 1
+        && isExpression(node.children.get(0))) {
+      statements(node.children.get(0), out, method, depth + 1);
+      return;
+    }
+    if (isExpression(node) && !node.kind.equals("ASSIGN")) {
+      BankFlow.Stmt result = statement("EXPR", node);
+      result.expr = expression(node, depth + 1);
+      out.add(result);
+      return;
+    }
+    // Loops, switches, field writes and unsupported statements preserve candidate calls,
+    // but their children must not establish a definite control-flow barrier.
+    BankFlow.Stmt result = statement("UNKNOWN", node);
+    if (node.kind.equals("ASSIGN")) result.expr = expression(node, depth + 1);
+    else for (Node child : node.children) statements(child, result.body, method, depth + 1);
+    out.add(result);
+  }
+
+  private boolean isExpression(Node node) {
+    String kind = node.kind;
+    return kind.equals("CALL")
+        || kind.equals("NAME")
+        || kind.equals("FIELD")
+        || kind.equals("LITERAL")
+        || kind.equals("PAREN")
+        || kind.equals("CAST")
+        || kind.equals("UNARY")
+        || kind.equals("BINARY")
+        || kind.equals("NEW")
+        || kind.equals("ARRAY_ACCESS")
+        || kind.equals("CONDITIONAL")
+        || kind.equals("LAMBDA")
+        || kind.equals("METHOD_REF")
+        || kind.equals("ASSIGN")
+        || kind.equals("UNKNOWN");
+  }
+
+  private BankFlow.Expr expression(Node node, int depth) {
+    if (node == null) return new BankFlow.Expr("UNKNOWN");
+    tick(depth);
+    String kind = node.kind;
+    if ((kind.equals("PAREN") || kind.equals("CAST")) && node.args.size() == 1)
+      return expression(node.args.get(0), depth + 1);
+    if (kind.equals("NAME")) {
+      Node declaration = graph.declaration(node);
+      BankFlow.Expr result = expr(local(declaration) ? "NAME" : "UNKNOWN", node);
+      if (local(declaration)) result.name = key(declaration);
+      return result;
+    }
+    if (kind.equals("CALL")) {
+      BankFlow.Expr result = expr("CALL", node);
+      result.symbol = symbol(node);
+      if (node.receiver != null && !typeReceiver(node.receiver))
+        result.receiver = expression(node.receiver, depth + 1);
+      for (Node arg : node.args) result.args.add(expression(arg, depth + 1));
+      return result;
+    }
+    if (kind.equals("LITERAL")) {
+      BankFlow.Expr result = expr("LITERAL", node);
+      if (node.type.equals("boolean")) result.literal = Boolean.valueOf(node.literalValue);
+      else if (node.type.equals("null")) result.literal = null;
+      else if (node.type.equals("java.lang.String") || node.type.equals("char"))
+        result.literal = node.literalValue;
+      else {
+        String number = node.literalValue == null ? "" : node.literalValue.replace("_", "");
+        if (number.endsWith("l") || number.endsWith("L"))
+          number = number.substring(0, number.length() - 1);
+        try {
+          result.literal =
+              number.startsWith("0b") || number.startsWith("0B")
+                  ? Long.valueOf(number.substring(2), 2)
+                  : Long.decode(number);
+        } catch (NumberFormatException notInteger) {
+          try {
+            Double value = Double.valueOf(number);
+            if (value.isInfinite() || value.isNaN()) result.kind = "UNKNOWN";
+            else result.literal = value;
+          } catch (NumberFormatException unsupported) {
+            result.kind = "UNKNOWN";
+          }
+        }
+      }
+      return result;
+    }
+    if ((kind.equals("UNARY")
+            && (node.name.equals("!") || node.name.equals("+") || node.name.equals("-")))
+        || kind.equals("BINARY")) {
+      BankFlow.Expr result = expr(kind, node);
+      result.operator = node.name;
+      for (Node arg : node.args) result.args.add(expression(arg, depth + 1));
+      return result;
+    }
+    BankFlow.Expr result = expr("UNKNOWN", node);
+    if (kind.equals("LAMBDA") || kind.equals("METHOD_REF")) return result;
+    if (node.receiver != null && !node.args.contains(node.receiver))
+      result.receiver = expression(node.receiver, depth + 1);
+    for (Node arg : node.args) result.args.add(expression(arg, depth + 1));
+    if (node.args.isEmpty() && node.receiver == null)
+      for (Node child : node.children)
+        if (isExpression(child)) result.args.add(expression(child, depth + 1));
+    return result;
+  }
+
+  private String symbol(Node call) {
+    if (call.receiver != null) {
+      if (graph.resolve(call).reasons.contains("DUPLICATE_TYPE")) return "";
+      // A dotted identifier may be either a package-qualified type or a value access.
+      // Never reinterpret an unresolved field on a local value as a qualified type.
+      Node base = call.receiver;
+      while (base.kind.equals("FIELD") && base.receiver != null) base = base.receiver;
+      if (base != call.receiver
+          && graph.declaration(base) != null
+          && graph.declaration(call.receiver) == null
+          && !base.name.equals("this")) return "";
+      String type = graph.declaredType(call.receiver);
+      return type.length() == 0 ? "" : type + "#" + call.name;
+    }
+    JavaGraph.Edge edge = graph.resolve(call);
+    if (!edge.unknown && !edge.candidate && edge.targets.size() == 1)
+      return edge.targets.get(0).owner.qualifiedName + "#" + call.name;
+    // Explicit static imports are useful for external APIs, but only when a local
+    // declaration of the same name cannot shadow them. Wildcards stay unresolved.
+    for (JavaSyntax.Type owner = call.ownerType; owner != null; owner = owner.owner)
+      for (Method method : owner.methods) if (method.name.equals(call.name)) return "";
+    Set<String> imports = new HashSet<String>();
+    for (String imported : call.unit.staticImports) {
+      if (imported.endsWith(".*")) return "";
+      if (imported.endsWith("." + call.name))
+        imports.add(imported.substring(0, imported.length() - call.name.length() - 1));
+    }
+    return imports.size() == 1 ? imports.iterator().next() + "#" + call.name : "";
+  }
+
+  private boolean typeReceiver(Node receiver) {
+    if (!(receiver.kind.equals("NAME") || receiver.kind.equals("FIELD"))) return false;
+    Node base = receiver;
+    while (base.kind.equals("FIELD") && base.receiver != null) base = base.receiver;
+    return base.kind.equals("NAME")
+        && !base.name.equals("this")
+        && !base.name.equals("super")
+        && graph.declaration(base) == null
+        && graph.declaration(receiver) == null
+        && graph.declaredType(receiver).length() > 0;
+  }
+
+  private static boolean local(Node node) {
+    return node != null && (node.kind.equals("VAR") || node.kind.equals("PARAM"));
+  }
+
+  private static String key(Node declaration) {
+    return declaration.unit.path + ":" + declaration.start + ":" + declaration.name;
+  }
+
+  private static BankFlow.Stmt statement(String kind, Node node) {
+    BankFlow.Stmt statement = new BankFlow.Stmt(kind);
+    statement.path = node.unit.path;
+    statement.line = node.line;
+    return statement;
+  }
+
+  private static BankFlow.Expr expr(String kind, Node node) {
+    BankFlow.Expr expression = new BankFlow.Expr(kind);
+    expression.path = node.unit.path;
+    expression.line = node.line;
+    return expression;
+  }
+
+  private static final class Limit extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+  }
+}

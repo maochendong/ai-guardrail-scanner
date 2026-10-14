@@ -12,11 +12,13 @@ import zipfile
 
 
 class Client:
-    def __init__(self, java, jar, roots, output):
+    def __init__(self, java, jar, roots, output, profile='generic', bank_policy=None):
         command = [str(java), '-Xmx768m', '-jar', str(jar), 'mcp']
         for root in roots:
             command += ['--allow-root', str(root)]
-        command += ['--output', str(output)]
+        command += ['--output', str(output), '--profile', profile]
+        if bank_policy is not None:
+            command += ['--bank-policy', str(bank_policy)]
         self.command = command
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, encoding='utf-8', bufsize=1)
@@ -51,10 +53,10 @@ class Client:
 
     def initialize(self):
         value = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.3.1'}})
+                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.4.0'}})
         self.process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         self.process.stdin.flush()
-        assert value['serverInfo']['version'] == '0.3.1'
+        assert value['serverInfo']['version'] == '0.4.0'
         return value
 
     def close(self):
@@ -71,9 +73,35 @@ class Client:
         return stderr
 
 
-def stable(report):
+def stable_report(report):
     return {key: report[key] for key in ['schemaVersion', 'ruleSetVersion', 'sourceDigest',
-                                        'project', 'complete', 'securityVerified', 'assessments', 'diagnostics']}
+                                        'project', 'complete', 'securityVerified', 'policy', 'gateDecision',
+                                        'assessments', 'diagnostics']}
+
+
+def expected_ids(rules, languages, profile):
+    ids = {rule['id'] for rule in rules if
+           (rule['id'].startswith('AI-PY-') and 'python' in languages) or
+           (rule['id'].startswith('AI-') and not rule['id'].startswith('AI-PY-') and 'java' in languages)}
+    if profile != 'generic':
+        ids.update(['BANK-DATA-001', 'BANK-IAM-001', 'BANK-GUARD-001'])
+    if profile in ['bank-customer', 'bank-all']:
+        ids.update(['BANK-CUST-001', 'BANK-CUST-002'])
+    if profile in ['bank-internal', 'bank-all']:
+        ids.update(['BANK-INTERNAL-001', 'BANK-INTERNAL-002'])
+    return ids
+
+
+def verify_policy(report, profile, bank_policy):
+    assert report['complete'] is False and report['securityVerified'] is False
+    assert report['policy']['profile'] == profile
+    assert report['policy']['version'] == 'bank-policy-v1'
+    digest = report['policy']['digest']
+    assert len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
+    contracts = json.loads(bank_policy.read_text())['contracts'] if bank_policy is not None else []
+    assert report['policy']['contractCount'] == len(contracts)
+    assert report['gateDecision'] == ('BLOCK' if any(
+        a['disposition'] == 'VIOLATED' for a in report['assessments']) else 'REVIEW')
 
 
 def main():
@@ -82,6 +110,8 @@ def main():
     parser.add_argument('--jar', type=Path, required=True)
     parser.add_argument('--project', type=Path, action='append', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--profile', choices=['generic', 'bank-common', 'bank-customer', 'bank-internal', 'bank-all'], default='generic')
+    parser.add_argument('--bank-policy', type=Path)
     parser.add_argument('--expect-java-functions', action='store_true')
     parser.add_argument('--expect-python-rag', action='store_true')
     parser.add_argument('--require-python-parse-success', action='store_true')
@@ -89,6 +119,9 @@ def main():
     parser.add_argument('--expect-python-guard-results', action='store_true')
     args = parser.parse_args()
     args.output = args.output.resolve()
+    if args.bank_policy is not None:
+        args.bank_policy = args.bank_policy.resolve()
+        assert args.bank_policy.is_file(), args.bank_policy
     args.project = [project.resolve() for project in args.project]
     args.output.mkdir(parents=True, exist_ok=True)
     cancellation_fixture = args.output.resolve() / 'cancellation-fixture'
@@ -106,21 +139,22 @@ def main():
                 assert major <= 51, (name, major)
                 classes.append(major)
     summary = {'jar': str(args.jar.resolve()), 'sha256': hashlib.sha256(args.jar.read_bytes()).hexdigest(),
-               'classCount': len(classes), 'maxClassMajor': max(classes), 'runtimes': []}
+               'classCount': len(classes), 'maxClassMajor': max(classes), 'profile': args.profile, 'runtimes': []}
     reference = {}
     for index, java in enumerate(args.java):
         runtime_output = args.output / ('runtime-' + str(index + 1))
         runtime_output.mkdir(exist_ok=True)
         version = subprocess.run([java, '-version'], text=True, capture_output=True, check=True)
         version_text = version.stdout + version.stderr
-        client = Client(java, args.jar.resolve(), args.project + [cancellation_fixture], runtime_output / 'reports')
+        client = Client(java, args.jar.resolve(), args.project + [cancellation_fixture],
+                        runtime_output / 'reports', args.profile, args.bank_policy)
         row = {'java': java, 'versionOutput': version_text, 'command': client.command, 'projects': []}
         try:
             row['initialize'] = client.initialize()
             assert len(client.rpc('tools/list')['tools']) == 5
             rules = client.tool('guardrail_rules', {})
             assert len(rules) == len({rule['id'] for rule in rules})
-            assert len(rules) >= 26, len(rules)
+            assert len(rules) == 33, len(rules)
             row['ruleCount'] = len(rules)
             client.tool('guardrail_scan_start', {'repository': '/'}, error=True)
             client.tool('guardrail_scan_start', {'repository': 42}, error=True)
@@ -145,12 +179,19 @@ def main():
                 sarif = json.loads(formats['sarif']['content'])['runs'][0]
                 assert report['runtime']['javaVersion'].startswith(('1.7.', '1.8.'))
                 assert report['runtime']['javaVersion'] in version_text
-                assert report['securityVerified'] is False
-                assert report['runtime']['scannerVersion'] == '0.3.1'
-                assert report['ruleSetVersion'] == 'java-python-guardrail-v3.1'
+                assert report['schemaVersion'] == '1.3'
+                verify_policy(report, args.profile, args.bank_policy)
+                assert {a['ruleId'] for a in report['assessments']} == expected_ids(
+                    rules, report['project']['languages'], args.profile)
+                assert state['policy'] == report['policy']
+                assert state['gateDecision'] == report['gateDecision']
+                assert report['runtime']['scannerVersion'] == '0.4.0'
+                assert report['ruleSetVersion'] == 'java-python-guardrail-v4'
                 if args.require_python_parse_success:
                     assert not any(d['code'] in ['PYTHON_PARSE_FAILED', 'PYTHON_PARSE_DEPTH',
-                                                 'PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics']), project
+                                                 'PYTHON_ANALYSIS_LIMIT', 'BANK_PYTHON_PARSE_FAILED',
+                                                 'BANK_PYTHON_ANALYSIS_DEPTH', 'BANK_PYTHON_ANALYSIS_LIMIT']
+                                   for d in report['diagnostics']), project
                 if args.require_resolved_python_clients and report['project']['languages'] == ['python']:
                     assert not any(d['code'] == 'PYTHON_UNRESOLVED_MODEL_CALL'
                                    for d in report['diagnostics']), project
@@ -172,19 +213,23 @@ def main():
                 assert {item['ruleId'] for item in sarif['results']} == {
                     item['ruleId'] for item in report['assessments'] if item['disposition'] == 'VIOLATED'}
                 assert sarif['properties']['project'] == report['project']
+                assert sarif['properties']['policy'] == report['policy']
+                assert sarif['properties']['gateDecision'] == report['gateDecision']
+                assert sarif['properties']['securityVerified'] is False
                 assert {item['domain'] for item in report['assessments']} == {'L' + str(i) for i in range(1, 8)}
                 assert client.tool('guardrail_scan_cancel', {'scanId': scan_id}) == state
                 client.tool('guardrail_scan_result', {'scanId': scan_id, 'format': 'raw'}, error=True)
                 key = str(project)
                 if key in reference:
-                    assert stable(report) == reference[key], 'Cross-JVM evidence mismatch: ' + key
+                    assert stable_report(report) == reference[key], 'Cross-JVM evidence mismatch: ' + key
                 else:
-                    reference[key] = stable(report)
+                    reference[key] = stable_report(report)
                 counts = {d: sum(a['disposition'] == d for a in report['assessments'])
                           for d in ['VIOLATED', 'OBSERVED', 'UNKNOWN', 'NOT_APPLICABLE']}
                 project_result = {'repository': key, 'scanId': scan_id, 'states': states,
                                   'seconds': round(time.monotonic() - started, 3), 'project': report['project'],
-                                  'counts': counts, 'artifacts': formats['json']['artifacts']}
+                                  'counts': counts, 'policy': report['policy'], 'gateDecision': report['gateDecision'],
+                                  'artifacts': formats['json']['artifacts']}
                 row['projects'].append(project_result)
                 print(json.dumps({'runtime': report['runtime']['javaVersion'], **project_result}, ensure_ascii=False), flush=True)
             cancelling = client.tool('guardrail_scan_start', {'repository': str(cancellation_fixture)})
@@ -205,6 +250,7 @@ def main():
             assert process.returncode != 0
             assert not stdout, 'Malformed frame caused non-protocol output'
         row['malformedAndOversizeFramesRejected'] = True
+    (args.output / 'stable-reports.json').write_text(json.dumps(reference, ensure_ascii=False, indent=2) + '\n')
     summary['crossRuntimeEquivalent'] = True
     summary['passed'] = True
     (args.output / 'runtime-matrix.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')

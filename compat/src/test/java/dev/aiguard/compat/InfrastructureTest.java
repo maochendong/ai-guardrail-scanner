@@ -288,7 +288,7 @@ public class InfrastructureTest {
     String[] lines = new String(result.toByteArray(), StandardCharsets.UTF_8).trim().split("\n");
     assertEquals(3, lines.length);
     assertEquals(
-        "0.3.1",
+        "0.4.0",
         Json.parse(lines[0])
             .getAsJsonObject()
             .getAsJsonObject("result")

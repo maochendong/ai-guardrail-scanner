@@ -6,6 +6,12 @@ import java.util.*;
 
 public final class Scanner {
   public Map<String, Object> scan(Path root, String id, Cancel cancel) throws Exception {
+    return scan(root, id, cancel, BankPolicy.generic());
+  }
+
+  public Map<String, Object> scan(Path root, String id, Cancel cancel, BankPolicy policy)
+      throws Exception {
+    policy.checkRepository(root);
     Inventory inventory = Inventory.load(root, cancel);
     List<Map<String, Object>> assessments = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> diagnostics =
@@ -41,6 +47,11 @@ public final class Scanner {
               "NO_SUPPORTED_SOURCE",
               "",
               "No supported production Java or Python source was analyzed."));
+    if (policy.enabled()) {
+      BankAnalysis bank = BankAnalysis.analyze(inventory, policy, cancel);
+      assessments.addAll(0, bank.assessments);
+      diagnostics.addAll(bank.diagnostics);
+    }
     List<Map<String, Object>> bounded = new ArrayList<Map<String, Object>>();
     boolean truncated = assessments.size() > 1000;
     for (Map<String, Object> item : assessments) {
@@ -70,56 +81,61 @@ public final class Scanner {
     }
     SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT);
     date.setTimeZone(TimeZone.getTimeZone("UTC"));
-    return Findings.map(
-        "schemaVersion",
-        "1.2",
-        "ruleSetVersion",
-        "java-python-guardrail-v3.1",
-        "scanId",
-        id,
-        "createdAt",
-        date.format(new Date()),
-        "sourceDigest",
-        inventory.digest,
-        "project",
+    Map<String, Object> report =
         Findings.map(
-            "springAiVersion",
-            springVersion,
-            "versionStatus",
-            versionStatus,
-            "javaFiles",
-            inventory.javaFiles,
-            "pythonFiles",
-            inventory.python.size(),
-            "configurationFiles",
-            inventory.configurationFiles,
-            "aiDetected",
-            detected,
-            "aiProtocols",
-            new ArrayList<String>(protocols),
-            "customGatewayMethods",
-            gateways,
-            "languages",
-            languages),
-        "runtime",
-        Findings.map(
-            "javaVersion",
-            System.getProperty("java.version"),
-            "minimumJavaVersion",
-            "1.7",
-            "scannerVersion",
-            "0.3.1"),
-        "complete",
-        false,
-        "securityVerified",
-        false,
-        "analysisScope",
-        "bounded offline Java/Python syntax and source relations; no target execution, model calls"
-            + " or runtime security verification",
-        "assessments",
-        bounded,
-        "diagnostics",
-        diagnostics);
+            "schemaVersion",
+            "1.3",
+            "ruleSetVersion",
+            "java-python-guardrail-v4",
+            "scanId",
+            id,
+            "createdAt",
+            date.format(new Date()),
+            "sourceDigest",
+            inventory.digest,
+            "project",
+            Findings.map(
+                "springAiVersion",
+                springVersion,
+                "versionStatus",
+                versionStatus,
+                "javaFiles",
+                inventory.javaFiles,
+                "pythonFiles",
+                inventory.python.size(),
+                "configurationFiles",
+                inventory.configurationFiles,
+                "aiDetected",
+                detected,
+                "aiProtocols",
+                new ArrayList<String>(protocols),
+                "customGatewayMethods",
+                gateways,
+                "languages",
+                languages),
+            "runtime",
+            Findings.map(
+                "javaVersion",
+                System.getProperty("java.version"),
+                "minimumJavaVersion",
+                "1.7",
+                "scannerVersion",
+                "0.4.0"),
+            "policy",
+            policy.metadata(),
+            "complete",
+            false,
+            "securityVerified",
+            false,
+            "analysisScope",
+            "bounded offline Java/Python syntax and source relations; no target execution, model"
+                + " calls or runtime security verification",
+            "assessments",
+            bounded,
+            "diagnostics",
+            diagnostics);
+    report.put("gateDecision", count(report, "VIOLATED") > 0 ? "BLOCK" : "REVIEW");
+    return report;
   }
 
   @SuppressWarnings("unchecked")

@@ -57,7 +57,9 @@ public final class Reports {
   private static String markdown(Map<String, Object> report) {
     StringBuilder out =
         new StringBuilder("# AI 安全围栏静态审计\n\n本报告提供静态证据，不构成安全认证。OBSERVED 不表示安全通过；零违规也不表示安全。\n\n");
-    for (String key : Arrays.asList("scanId", "createdAt", "ruleSetVersion", "sourceDigest"))
+    for (String key :
+        Arrays.asList(
+            "scanId", "createdAt", "ruleSetVersion", "sourceDigest", "gateDecision", "policy"))
       out.append("- ").append(key).append("：").append(escape(report.get(key))).append('\n');
     Map<String, Object> project = (Map<String, Object>) report.get("project");
     Map<String, Object> runtime = (Map<String, Object>) report.get("runtime");
@@ -223,6 +225,10 @@ public final class Reports {
             report.get("project"),
             "runtime",
             report.get("runtime"),
+            "policy",
+            report.get("policy"),
+            "gateDecision",
+            report.get("gateDecision"),
             "analysisComplete",
             false,
             "controlEvaluationComplete",
@@ -240,7 +246,7 @@ public final class Reports {
             "tool",
             Findings.map(
                 "driver",
-                Findings.map("name", "ai-guardrail-scanner", "version", "0.3.1", "rules", rules)),
+                Findings.map("name", "ai-guardrail-scanner", "version", "0.4.0", "rules", rules)),
             "results",
             results,
             "properties",
