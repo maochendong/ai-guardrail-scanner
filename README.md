@@ -1,18 +1,22 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 应用的源码与配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。首期通过 11 条有限范围规则检查 Java AST 与部分配置，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.3.0 原生运行于 Java 7/8，提供 19 条 Java 规则与 7 条 Python/RAG 规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
 本项目是 MVP。报告中的 `OBSERVED` 只表示观察到控制或构造，不能解释为安全通过。未发现问题也不能证明防注入效果、鉴权正确性或生产防护有效性。
 
 ## 构建与演示
 
-要求 Java 21、Maven 3.9+。脚本优先使用本机 Homebrew Java 21，没有该路径时使用当前 Java 环境，并通过项目内 Maven 配置访问依赖仓库；不修改系统 Java 设置。使用其他 JDK 时，可显式设置 `JAVA_HOME` 后执行 `mvn -s .mvn/settings.xml verify`。首次构建需要下载扫描器依赖；扫描阶段不下载目标依赖。
+扫描器运行要求 **Java 7 或以上**；不启动其他 JVM、Python 或目标应用。扫描源码的语法版本与扫描器运行版本彼此独立：在 Java 7 上也能解析受支持的 Java 8 lambda、现代 record/switch 和 Python 3 源码。
+
+构建使用 Maven 3.9+ / Java 21 驱动构建工具，并通过真实 JDK 7 的 `javac` 编译兼容模块，防止误用新 Java API。设置 `JAVA7_HOME`，或在 macOS 使用已注册的 JDK 7。首次构建下载扫描器自身依赖；扫描阶段不下载目标依赖。
 
 ```bash
-./scripts/mvn.sh verify
-java -jar target/ai-guardrail-scanner.jar rules
-java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /absolute/report-root
+./scripts/build-compatible.sh clean verify
+"$JAVA7_HOME/bin/java" -jar compat/target/ai-guardrail-scanner-java7.jar rules
+"$JAVA7_HOME/bin/java" -jar compat/target/ai-guardrail-scanner-java7.jar scan /absolute/application --output /absolute/report-root
 ```
+
+Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留 Java 21 参考实现及其回归测试，`./scripts/mvn.sh verify` 构建的是参考实现；Codex 应加载 `compat/` 的兼容产物。
 
 将 `/absolute/application` 替换为待审计项目的绝对路径，报告根目录放在项目之外。两者不能相互包含。每次扫描产生独立扫描 ID 和目录，内含：
 
@@ -22,7 +26,7 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 
 `examples/unsafe` 展示可识别的缺陷模式；`examples/safe` 展示部分模式修正；`examples/unknown` 展示依赖版本和外部控制无法确定的情况。这些源码只作为静态扫描输入，不是可直接启动的 Spring 应用。`safe` 目录不表示整套应用通过安全认证，其他控制仍可能是 `UNKNOWN`。
 
-`rules` 将规则目录作为 JSON 写入 stdout；`scan` 输出扫描 ID、报告路径及违反数、未知数与完整性摘要。CLI 退出码：`0` 为没有违反且评估完成，`1` 为发现违反，`2` 为没有违反但存在未知或分析未完成，`130` 为取消。参数或执行错误会返回非零状态；调用方应同时检查报告和错误输出。
+`rules` 将规则目录作为 JSON 写入 stdout；`scan` 输出扫描 ID、报告路径及违反数、未知数与完整性摘要。CLI 退出码：`1` 为发现违反，`2` 为存在未知、分析未完成或执行错误，`130` 为取消；`rules`/帮助正常返回 `0`。0.3 静态扫描始终保留未验证范围，不用退出码 `0` 表示安全通过。参数或执行错误会返回非零状态；调用方应同时检查报告和错误输出。
 
 ## MCP 接入
 
@@ -32,9 +36,9 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 {
   "mcpServers": {
     "ai-guardrail-scanner": {
-      "command": "/absolute/jdk-21/bin/java",
+      "command": "/absolute/jdk-7/bin/java",
       "args": [
-        "-jar", "/absolute/ai-guardrail-scanner/target/ai-guardrail-scanner.jar",
+        "-jar", "/absolute/ai-guardrail-scanner/compat/target/ai-guardrail-scanner-java7.jar",
         "mcp",
         "--allow-root", "/absolute/projects",
         "--output", "/absolute/guardrail-reports"
@@ -46,7 +50,7 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 
 可以重复传入 `--allow-root`。允许目录和报告目录由启动 server 的操作员决定，MCP 请求不能扩大权限。stdout 仅用于 JSON-RPC，日志写入 stderr。
 
-本机 Codex 接入和 codebuddy、wm-sales 两个真实项目的流程结果见 [接入验收记录](docs/codex-integration-20261013.md)。两项目使用自定义模型网关，现版未完成其控制语义分析；流程成功不代表应用安全通过。
+本机 Codex 首次接入记录见 [0.1 验收](docs/codex-integration-20261013.md)；自定义网关、Guard 和 function calling 的升级与两个真实项目复验见 [0.2 验收](docs/custom-gateway-verification.md)。原生 Java 7/8、Python/RAG 与三个项目复验见 [0.3 验收](docs/java7-python-verification.md)。流程完成不代表应用安全通过。
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -56,7 +60,7 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 | `guardrail_scan_cancel` | `scanId` | 请求取消；已经结束的结果不会变更 |
 | `guardrail_scan_result` | `scanId`，可选 `format` | 读取结果；格式为 `json`、`markdown`、`sarif`，默认 `json` |
 
-每个 server 同时只执行一个扫描，保留最多 32 个任务，达到上限后拒绝新任务；每次扫描设置 120 秒协作式超时。扫描 ID 与任务历史仅在当前进程会话内有效，不支持重启后恢复任务或继续查询旧 ID；成功导出的文件会持久保存。取消或失败不会冒充完成结果。
+每个 server 同时只执行一个扫描，保留最多 32 个任务，达到上限后拒绝新任务；每次扫描设置 120 秒协作式超时；内存中的报告正文总量最多 64 MiB，达到上限后返回 `SESSION_RESULT_LIMIT`，重新启动 server 可建立新会话。扫描 ID 与任务历史仅在当前进程会话内有效，不支持重启后恢复任务或继续查询旧 ID；成功导出的文件会持久保存。取消或失败不会冒充完成结果。
 
 结果工具返回状态、格式、内容可信度提示和文件位置；内容超过 512 KiB 时设置 `contentOmitted`，省略内联正文，完整文件仍可在操作员指定的目录读取。调用方应检查该字段，不能把空正文解释为空报告。
 
@@ -78,18 +82,20 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 ## 执行边界与数据处理
 
 - 扫描只读解析源码与配置，不运行目标的 Maven、Gradle、应用、注解处理器或项目脚本，不下载目标依赖。Maven XML 禁用 DTD 和外部实体，不执行 XML 中的构建或插件声明。
-- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.1.0 未实现。
-- Java 解析使用 Java 21 语法级别，输入按 UTF-8 解码；不支持的语法或编码会留下诊断。默认排除 `.git`、`target`、`build`、`node_modules`、`.idea`、`.gradle`，以及 `src/test`、`src/testFixtures`、`src/integrationTest`，范围排除记录在 `EXCLUDED_SCOPE` 中。
+- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.3.0 未实现。
+- Java/Python 均使用固定版本的 ANTLR 语法解析，输入按 UTF-8 解码；解析失败或超预算的文件不使用部分语法结果。默认排除 `.git`、构建/依赖/工具目录、Python 虚拟环境与缓存，以及 Java/Python 测试目录；任意目录名只要具有 `pyvenv.cfg` 标记也按虚拟环境排除，`site-packages` 按依赖排除。排除项记录在 `EXCLUDED_SCOPE` 中。配置只选择 `pom.xml`、`build.gradle[.kts]`、`gradle.properties` 与 `application*.properties/yml/yaml`，其他 XML/YAML 不纳入当前配置规则。
 - 默认不跟随符号链接，并拒绝扫描范围逃逸和输入/输出目录重叠。单次最多清点 200,000 个目录条目、选择 10,000 个源码/配置文件，单文件 2 MiB、读取总量 32 MiB；预算耗尽或解析失败会留下诊断，不会计为通过。
-- 优先使用锚定目录的安全读取。部分平台或文件系统，包括当前 macOS 环境，不能提供该 API，会记录 `FILESYSTEM_RACE_LIMITATION` 并使完整性不足；此时退回路径、文件身份和修改信息校验，要求扫描期间源码树保持稳定。即使目录 API 可用，也不代表获得了跨文件原子快照。
+- 兼容实现使用不跟随链接的文件打开、路径、文件身份和修改信息校验，但不提供锚定目录读取或原子快照。每次记录 `FILESYSTEM_RACE_LIMITATION`，扫描期间源码树须保持稳定。
 - 版本按包含 AI 引用的源码或明确 AI 配置所属模块核实，不能借用兄弟模块版本。无法确定模块的 Spring AI 依赖时，全项目版本状态保守降为 `UNKNOWN`；首期不输出逐源码版本。详细 Maven/Gradle 支持范围见规则说明。
 - 报告只包含受控说明、相对文件位置和摘要，不导出源码摘录、原始提示词或模型响应。文件名和路径本身仍可能透露业务信息，报告应保存在操作员控制的目录。
 - 源文件摘要覆盖成功读取文件的相对路径及字节；未读取、被跳过或超预算文件不在摘要内。已经读入但解析失败的文件仍进入摘要。摘要不是整个仓库完整性的证明。
 - 报告目录必须新建或为空，不覆盖既有文件，不接受目录链中的符号链接。文件通过同文件系统硬链接原子发布，因此报告文件系统需要支持硬链接；不支持时导出失败。已发布文件不会被覆盖，失败可能留下部分文件，不能据此认定扫描完成。
 
-规则使用局部 AST 声明、导入和有限来源关系，没有完整跨方法数据流，也没有完整分析 Spring Security `SecurityFilterChain`、方法安全及业务授权。源码与配置仅覆盖表中列出的模式。静态审计不能测量围栏抗攻击率，也不涵盖模型权重后门、在线鲁棒性或真实业务恢复效果；这些结论需要真实应用样例和运行时验证。
+自定义网关规则使用类型、HTTP 协议和有限跨方法来源关系，应用类名及方法名不作为模型或安全控制的判据。调用图最多索引 30,000 个方法、100,000 个调用，每次分派最多 16 个候选，继承与成员查找最多 8 层。方法、调用、候选及总操作预算耗尽会留下诊断，无法解析的深度关系保留未知。接口和可覆写方法的候选关系不等于部署中的实际 Bean。模型返回、SSE 回调和工具分派分别追踪；普通 HTTP、JSON 解析、方法名带 Guard 或多传一个 user 参数均不能证明安全。
 
-## 开发与验证
+这仍不是完整跨方法数据流，也没有完整分析 Spring Security `SecurityFilterChain`、方法安全及业务授权。源码与配置仅覆盖表中列出的模式。静态审计不能测量围栏抗攻击率，也不涵盖模型权重后门、在线鲁棒性或真实业务恢复效果；这些结论需要真实应用样例和运行时验证。
+
+## Java 21 参考实现的开发与验证
 
 ```bash
 ./scripts/mvn.sh -Dtest=ReportWriterTest test
@@ -97,4 +103,4 @@ java -jar target/ai-guardrail-scanner.jar scan /absolute/application --output /a
 ./scripts/mvn.sh -Dtest=McpProtocolTest -Dscanner.jar=target/ai-guardrail-scanner.jar test
 ```
 
-`verify` 执行规则、文件与权限边界、生命周期、报告重新读取和基于测试 classpath 的 MCP 协议测试，并打包 jar。紧随其后的命令显式指定打包产物，才会通过真实 `java -jar` 子进程验证 stdio MCP。本次构建、144 项测试与示例结果见 [验证记录](docs/verification.md)。项目设计与实施计划见 `docs/superpowers/`。
+`verify` 执行规则、文件与权限边界、生命周期、报告重新读取和基于测试 classpath 的 MCP 协议测试，并打包 jar。紧随其后的命令显式指定打包产物，才会通过真实 `java -jar` 子进程验证 stdio MCP。首次 144 项测试与示例结果见 [0.1 验证记录](docs/verification.md)，0.2 结果见 [历史验证记录](docs/custom-gateway-verification.md)。0.3 的构建、实际 JDK 7/8 执行及 Codex 复验命令见 [兼容验收记录](docs/java7-python-verification.md)。项目设计与实施计划见 `docs/superpowers/`。

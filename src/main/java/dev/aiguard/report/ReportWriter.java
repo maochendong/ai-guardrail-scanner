@@ -84,6 +84,8 @@ public final class ReportWriter {
         out.append("- 源文件摘要：").append(escape(report.sourceDigest())).append('\n');
         out.append("- Spring AI 版本：").append(escape(report.project().springAiVersion()))
                 .append("（").append(escape(report.project().versionStatus())).append("）\n");
+        out.append("- AI 协议证据：").append(escape(String.join("、", report.project().aiProtocols())))
+                .append("；自定义网关边界方法：").append(report.project().customGatewayMethods()).append('\n');
         out.append("- 分析完整性：").append(report.complete() ? "完整" : "**不完整，必须检查诊断与未评估项**").append('\n');
         out.append("- 发现违反：").append(report.violations()).append("；证据不足 / 未评估：")
                 .append(report.unknowns()).append("。\n\n");
@@ -184,6 +186,7 @@ public final class ReportWriter {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("scanId", report.scanId());
         properties.put("sourceDigest", report.sourceDigest());
+        properties.put("project", report.project());
         properties.put("analysisComplete", report.complete());
         properties.put("unknownAssessments", report.unknowns());
         properties.put("controlEvaluationComplete", report.complete() && report.unknowns() == 0 && unassessedDomains(report).isEmpty());

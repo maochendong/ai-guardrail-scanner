@@ -18,7 +18,14 @@ public final class ScanModel {
         public Assessment { evidence = List.copyOf(evidence); limitations = List.copyOf(limitations); }
     }
     public record ProjectMetadata(String springAiVersion, String versionStatus,
-                                  int javaFiles, int configurationFiles, boolean aiDetected) {}
+                                  int javaFiles, int configurationFiles, boolean aiDetected,
+                                  List<String> aiProtocols, int customGatewayMethods) {
+        public ProjectMetadata { aiProtocols = List.copyOf(aiProtocols); }
+        public ProjectMetadata(String springAiVersion, String versionStatus, int javaFiles, int configurationFiles, boolean aiDetected) {
+            this(springAiVersion,versionStatus,javaFiles,configurationFiles,aiDetected,
+                    aiDetected ? List.of("spring-ai") : List.of(),0);
+        }
+    }
     public record Report(String schemaVersion, String ruleSetVersion, String scanId, String createdAt,
                          String sourceDigest, ProjectMetadata project, boolean complete,
                          List<Assessment> assessments, List<Diagnostic> diagnostics) {
@@ -26,7 +33,7 @@ public final class ScanModel {
         @com.fasterxml.jackson.annotation.JsonProperty("securityVerified")
         public boolean securityVerified() { return false; }
         @com.fasterxml.jackson.annotation.JsonProperty("analysisScope")
-        public String analysisScope() { return "bounded static source/configuration evidence; no runtime or model effectiveness verification"; }
+        public String analysisScope() { return "bounded static source/configuration and local inter-method evidence; no runtime or model effectiveness verification"; }
         public long violations() { return assessments.stream().filter(a -> a.disposition() == Disposition.VIOLATED).count(); }
         public long unknowns() { return assessments.stream().filter(a -> a.disposition() == Disposition.UNKNOWN).count(); }
     }

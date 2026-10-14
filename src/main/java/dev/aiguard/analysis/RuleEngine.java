@@ -7,6 +7,7 @@ import com.github.javaparser.ast.stmt.*;
 import dev.aiguard.analysis.SourceProject.JavaSource;
 import dev.aiguard.analysis.rules.AstSupport;
 import dev.aiguard.analysis.rules.ConfigurationRules;
+import dev.aiguard.analysis.rules.FunctionCallingRules;
 import dev.aiguard.model.ScanModel.*;
 import java.util.*;
 import java.util.concurrent.CancellationException;
@@ -37,6 +38,8 @@ public final class RuleEngine {
     public List<Rule> catalog() {
         List<Rule> catalog = new ArrayList<>(RULES);
         catalog.add(ConfigurationRules.RULE);
+        catalog.addAll(CustomGuardRules.catalog());
+        catalog.addAll(FunctionCallingRules.catalog());
         return List.copyOf(catalog);
     }
 
@@ -72,8 +75,7 @@ public final class RuleEngine {
                 if (processBuilder(creation) && !creation.getArguments().isEmpty()) {
                     checkSink(source, creation, creation.getArgument(0), results);
                     // Separate data arguments do not become shell command text.
-                    if (creation.getArguments().size() >= 3 && creation.getArgument(1).isStringLiteralExpr() &&
-                        Set.of("-c", "/c", "-Command").contains(creation.getArgument(1).asStringLiteralExpr().asString()))
+                    if (literalShellCommand(creation))
                         checkSink(source, creation, creation.getArgument(2), results);
                 }
                 if (type(creation, creation.getTypeAsString(), SAFEGUARD) && !isBound(creation))
@@ -265,6 +267,15 @@ public final class RuleEngine {
     }
     private static boolean stringConstant(Expression e) {
         return e.isStringLiteralExpr() || e.isBinaryExpr() && stringConstant(e.asBinaryExpr().getLeft()) && stringConstant(e.asBinaryExpr().getRight());
+    }
+    private static boolean literalShellCommand(ObjectCreationExpr creation) {
+        if (creation.getArguments().size() < 3 || !creation.getArgument(0).isStringLiteralExpr() || !creation.getArgument(1).isStringLiteralExpr()) return false;
+        String executable = creation.getArgument(0).asStringLiteralExpr().asString().replace('\\', '/');
+        executable = executable.substring(executable.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
+        String flag = creation.getArgument(1).asStringLiteralExpr().asString();
+        return Set.of("sh", "bash", "zsh", "dash", "ksh").contains(executable) && Set.of("-c", "-lc").contains(flag)
+            || Set.of("cmd", "cmd.exe").contains(executable) && flag.equalsIgnoreCase("/c")
+            || Set.of("powershell", "powershell.exe", "pwsh", "pwsh.exe").contains(executable) && flag.equalsIgnoreCase("-Command");
     }
     private static void check(BooleanSupplier cancelled) { if (cancelled.getAsBoolean()) throw new CancellationException("scan cancelled"); }
     private static final class Result {

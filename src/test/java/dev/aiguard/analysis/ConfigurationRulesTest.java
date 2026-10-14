@@ -132,7 +132,7 @@ class ConfigurationRulesTest {
     }
     @Test void scanCancellationAndCatalogIntegration() {
         assertThrows(CancellationException.class,()->ConfigurationRules.assess(project(Map.of("application.yml",PROMPT+": true"),"1.1.6",true),()->true));
-        assertEquals(11,new RuleEngine().catalog().size());
+        assertEquals(19,new RuleEngine().catalog().size());
         assertTrue(new RuleEngine().assess(project(Map.of("application.properties",PROMPT+"=true"),"1.1.6",true),()->false).stream()
             .anyMatch(a->a.ruleId().equals("AI-L3-002")&&a.disposition()==Disposition.VIOLATED));
     }

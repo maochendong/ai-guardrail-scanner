@@ -130,6 +130,14 @@ class RuleEngineTest {
         assertNotEquals(Disposition.VIOLATED, assess("AI-L7-001", web("String text=chat.prompt().call().content(); new ProcessBuilder(\"echo\", text).start(); return text;")).disposition());
         assertEquals(Disposition.VIOLATED, assess("AI-L7-001", web("String text=chat.prompt().call().content(); new ProcessBuilder(\"sh\", \"-c\", text).start(); return text;")).disposition());
     }
+    @Test void nonShellCommandFlagDoesNotPromoteOrdinaryProcessData() {
+        assertNotEquals(Disposition.VIOLATED, assess("AI-L7-001", web("String text=chat.prompt().call().content(); new ProcessBuilder(\"grep\", \"-c\", text).start(); return text;")).disposition());
+        assertNotEquals(Disposition.VIOLATED, assess("AI-L2-001", "@Tool void search(String pattern) throws Exception { new ProcessBuilder(\"grep\", \"-c\", pattern).start(); }").disposition());
+    }
+    @Test void explicitShellPathAndModelExecutableRemainExecutionBoundaries() {
+        assertEquals(Disposition.VIOLATED, assess("AI-L7-001", web("String text=chat.prompt().call().content(); new ProcessBuilder(\"/bin/sh\", \"-c\", text).start(); return text;")).disposition());
+        assertEquals(Disposition.VIOLATED, assess("AI-L7-001", web("String text=chat.prompt().call().content(); new ProcessBuilder(text, \"-c\", \"fixed\").start(); return text;")).disposition());
+    }
     @Test void differentPayloadModerationDoesNotProveLateCheck() {
         String body = web("String other=chat.prompt().call().content(); chat.prompt().stream().content().doOnNext(chunk -> { emitter.send(chunk); moderation.call(new ModerationPrompt(other)); }); return \"done\";");
         assertEquals(Disposition.UNKNOWN, assess("AI-L5-001", body).disposition());

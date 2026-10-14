@@ -1,0 +1,134 @@
+[ {
+  "id" : "AI-L1-001",
+  "domain" : "L1",
+  "title" : "不可信输入进入 system 指令",
+  "description" : "跟踪 Web 方法参数、未被修改的局部别名与字符串拼接进入 ChatClient.system。",
+  "recommendation" : "把请求数据放入用户消息，固定系统指令；另外评估间接注入和工具信任边界。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L1-002",
+  "domain" : "L1",
+  "title" : "围栏绑定与异常放行",
+  "description" : "识别 SafeGuardAdvisor 请求级绑定。仅对方法内显式原始 builder 构造且无重赋值的客户端，确认 catch 遗漏围栏；默认 Advisor 不明时为 UNKNOWN。",
+  "recommendation" : "核实实际 ChatClient 的同步/流式绑定、默认 Advisor、拒绝处理及所有备用路径。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L2-001",
+  "domain" : "L2",
+  "title" : "工具入参与敏感操作",
+  "description" : "识别 Spring AI @Tool 参数直接进入 Runtime.exec、ProcessBuilder 或 JdbcTemplate 的 SQL 文本；其他工具仅审查声明证据。",
+  "recommendation" : "对工具参数独立鉴权并校验业务约束；使用服务端身份、固定操作与参数化 SQL。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/tools.html" ]
+}, {
+  "id" : "AI-L2-002",
+  "domain" : "L2",
+  "title" : "会话记忆隔离",
+  "description" : "识别 Web 方法中 ChatMemory.CONVERSATION_ID 使用常量且同请求表达式绑定记忆 Advisor；动态 ID 的归属授权不在证明范围。",
+  "recommendation" : "从已认证上下文建立会话归属并在读取/写入时校验，避免共享固定会话 ID。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L3-001",
+  "domain" : "L3",
+  "title" : "原始 AI 数据日志",
+  "description" : "跟踪同一方法进入 AI 的 Web 参数及模型返回值进入明确 SLF4J Logger 的日志参数。",
+  "recommendation" : "日志中仅保留必要元数据；对请求、模型响应和工具结果执行敏感信息处理及访问控制。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L4-001",
+  "domain" : "L4",
+  "title" : "无界模型重试",
+  "description" : "识别 ChatClient.stream 调用链上的 Reactor retry()，并观察字面量有限 retry(n)。",
+  "recommendation" : "设置有限重试、超时、并发、Token 预算与用户/租户配额；外部网关配置另行核实。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L5-001",
+  "domain" : "L5",
+  "title" : "流式发送与审核顺序",
+  "description" : "在同一直接语句块中识别 SseEmitter.send 模型片段与明确 ModerationModel.call 的先后顺序。",
+  "recommendation" : "先完成审核再发送相应内容；审核失败时阻断输出，单独验证同步与流式路径。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L6-001",
+  "domain" : "L6",
+  "title" : "请求审计关联",
+  "description" : "观察 AI Web 方法内 MDC requestId/traceId/correlationId 的常量或动态设置；不推断日志落地与全链路传播。",
+  "recommendation" : "使用请求级唯一关联标识，记录安全决策及策略版本，验证异步传播、日志保护和保留策略。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/advisors.html" ]
+}, {
+  "id" : "AI-L7-001",
+  "domain" : "L7",
+  "title" : "模型输出进入执行边界",
+  "description" : "跟踪模型输出和未修改局部别名进入 Runtime.exec、ProcessBuilder 与 JdbcTemplate 的 SQL 文本。",
+  "recommendation" : "把模型输出视为不可信数据；使用允许列表、结构和业务校验、参数化查询及执行前授权。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/tools.html" ]
+}, {
+  "id" : "AI-L2-003",
+  "domain" : "L2",
+  "title" : "请求级 RAG 过滤条件",
+  "description" : "识别 Web 入参直接设置 QuestionAnswerAdvisor.FILTER_EXPRESSION 且同请求表达式绑定该 Advisor；过滤构造器或外部 ACL 未解析。",
+  "recommendation" : "由服务端构造不可被请求覆盖的租户约束，组合允许的用户筛选条件并验证检索授权。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/api/retrieval-augmented-generation.html" ]
+}, {
+  "id" : "AI-L3-002",
+  "domain" : "L3",
+  "title" : "原始内容观测配置",
+  "description" : "检查 application*.properties/YAML 中五项 Spring AI 原始提示、响应和工具内容记录开关；只判断声明，不证明运行时生效。",
+  "recommendation" : "默认关闭原始内容记录；需要诊断时限制数据范围、脱敏、访问和保留时间，并核实实际运行环境覆盖。",
+  "references" : [ "https://docs.spring.io/spring-ai/reference/observability/index.html", "https://raw.githubusercontent.com/spring-projects/spring-ai/v1.0.0/spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc", "https://raw.githubusercontent.com/spring-projects/spring-ai/v1.1.0/spring-ai-docs/src/main/antora/modules/ROOT/pages/observability/index.adoc" ]
+}, {
+  "id" : "AI-GW-001",
+  "domain" : "L1",
+  "title" : "自定义模型协议与调用链",
+  "description" : "依据 HTTP 调用和关联模型协议识别边界，记录有界源码委托关系。",
+  "recommendation" : "核实部署时实际模型实现、协议适配及所有调用入口。",
+  "references" : [ ]
+}, {
+  "id" : "AI-GW-002",
+  "domain" : "L3",
+  "title" : "自定义网关响应日志",
+  "description" : "跟踪有协议来源的原始模型响应直接进入 SLF4J 日志；分派不确定时保留未知。",
+  "recommendation" : "避免记录原始模型响应；核实脱敏、日志级别、访问与保留策略。",
+  "references" : [ ]
+}, {
+  "id" : "AI-GUARD-001",
+  "domain" : "L1",
+  "title" : "网关前的局部拒绝分支",
+  "description" : "识别可到达模型边界的方法内，自定义判定结果控制提前退出的局部结构。",
+  "recommendation" : "核实判定的真实输入、拒绝含义及正常/备用路径覆盖；不能仅以调用顺序认定安全。",
+  "references" : [ ]
+}, {
+  "id" : "AI-GUARD-002",
+  "domain" : "L7",
+  "title" : "模型输出判定消费",
+  "description" : "跟踪模型值进入源码内布尔判定或布尔结果记录，并检查结果是否用于提前退出。",
+  "recommendation" : "消费检查结果并建立明确拒绝路径；核实检查输入、输出值及全路径一致性。",
+  "references" : [ ]
+}, {
+  "id" : "AI-GUARD-003",
+  "domain" : "L5",
+  "title" : "输出释放与局部判定顺序",
+  "description" : "区分 SSE 发送同一模型值之前或之后的局部拒绝判定，流式路径单独评估。",
+  "recommendation" : "在向外释放对应内容之前完成判定；集合、跨方法与回调传输需要单独验证。",
+  "references" : [ ]
+}, {
+  "id" : "AI-FC-001",
+  "domain" : "L2",
+  "title" : "Function Calling 分派边界",
+  "description" : "关联模型返回字段与局部分派方法，观察固定 switch、Map 查找及未知名称拒绝结构，检查名称/参数到命令或反射选择的直接路径。",
+  "recommendation" : "仅分派到服务端允许的操作；未知名称应拒绝，执行前独立鉴权，禁止模型字段直接决定命令或反射目标。",
+  "references" : [ "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" ]
+}, {
+  "id" : "AI-FC-002",
+  "domain" : "L7",
+  "title" : "Function Calling 参数验证",
+  "description" : "区分工具参数提取、JSON 解码和显式验证调用；工具目录的 schema 声明与解析成功均不能证明执行前验证。",
+  "recommendation" : "在执行前验证参数类型、范围和业务约束，并检查拒绝结果；限制参数大小、工具调用次数与结果大小。",
+  "references" : [ "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" ]
+}, {
+  "id" : "AI-FC-003",
+  "domain" : "L2",
+  "title" : "Function Calling 上下文来源",
+  "description" : "观察模型名称/参数与额外分派实参是否分离；不以变量名推断用户身份或授权语义。",
+  "recommendation" : "从已认证的服务端上下文获得身份和租户，独立校验每个工具的授权与资源归属，不接受模型传入的权限。",
+  "references" : [ "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" ]
+} ]

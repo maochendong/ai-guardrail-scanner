@@ -15,7 +15,7 @@ public final class Main {
         try {
             if (args.length == 0 || args[0].equals("--help") || args[0].equals("help")) {
                 System.out.println("""
-                        AI Guardrail Scanner 0.1.0 (Java 21)
+                        AI Guardrail Scanner 0.2.0 (Java 21)
                         scan /absolute/repository --output /absolute/report-root
                         mcp --allow-root /absolute/projects [--allow-root /another/root] --output /absolute/report-root
                         rules
