@@ -601,6 +601,7 @@ name
     : NAME
     | '_'
     | 'match'
+    | 'case'
     ;
 
 testlist_comp

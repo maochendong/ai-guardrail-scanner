@@ -51,10 +51,10 @@ class Client:
 
     def initialize(self):
         value = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.3.0'}})
+                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.3.1'}})
         self.process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         self.process.stdin.flush()
-        assert value['serverInfo']['version'] == '0.3.0'
+        assert value['serverInfo']['version'] == '0.3.1'
         return value
 
     def close(self):
@@ -84,6 +84,9 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--expect-java-functions', action='store_true')
     parser.add_argument('--expect-python-rag', action='store_true')
+    parser.add_argument('--require-python-parse-success', action='store_true')
+    parser.add_argument('--require-resolved-python-clients', action='store_true')
+    parser.add_argument('--expect-python-guard-results', action='store_true')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.project = [project.resolve() for project in args.project]
@@ -143,6 +146,18 @@ def main():
                 assert report['runtime']['javaVersion'].startswith(('1.7.', '1.8.'))
                 assert report['runtime']['javaVersion'] in version_text
                 assert report['securityVerified'] is False
+                assert report['runtime']['scannerVersion'] == '0.3.1'
+                assert report['ruleSetVersion'] == 'java-python-guardrail-v3.1'
+                if args.require_python_parse_success:
+                    assert not any(d['code'] in ['PYTHON_PARSE_FAILED', 'PYTHON_PARSE_DEPTH',
+                                                 'PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics']), project
+                if args.require_resolved_python_clients and report['project']['languages'] == ['python']:
+                    assert not any(d['code'] == 'PYTHON_UNRESOLVED_MODEL_CALL'
+                                   for d in report['diagnostics']), project
+                if args.expect_python_guard_results and report['project']['languages'] == ['python']:
+                    assert any(a['ruleId'] == 'AI-PY-007' and a['disposition'] == 'OBSERVED'
+                               and 'consumer-result' in a['explanation']
+                               for a in report['assessments']), project
                 if args.expect_java_functions and report['project']['javaFiles']:
                     for rule in ['AI-GW-001', 'AI-FC-001', 'AI-FC-002', 'AI-FC-003']:
                         assert any(a['ruleId'] == rule and a['disposition'] == 'OBSERVED'

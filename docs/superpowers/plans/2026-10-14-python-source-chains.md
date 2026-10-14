@@ -22,9 +22,9 @@
 
 Files: modify `compat/src/main/antlr4/dev/aiguard/compat/pygrammar/Python3Parser.g4`; add `compat/src/test/java/dev/aiguard/compat/PythonSyntaxTest.java`; update grammar modification notice after integration.
 
-- [ ] Add a failing parse fixture: `for case in items:\n    result = case.get('name')\n`, plus renamed parameters/attributes and an actual `match subject: case ...` block.
-- [ ] Reproduce failure under the shipped grammar, then add `'case'` to the existing `name` alternatives. Do not turn keywords into names globally.
-- [ ] Run syntax and existing Python tests; invalid standalone/malformed case statements must remain rejected. Parse both actual helper files read-only.
+- [x] Add a failing parse fixture: `for case in items:\n    result = case.get('name')\n`, plus renamed parameters/attributes and an actual `match subject: case ...` block.
+- [x] Reproduce failure under the shipped grammar, then add `'case'` to the existing `name` alternatives. Do not turn keywords into names globally.
+- [x] Run syntax and existing Python tests; invalid standalone/malformed case statements must remain rejected. Parse both actual helper files read-only.
 
 ### Task 2: Client and consumer-result contexts
 
@@ -32,19 +32,19 @@ Files: modify `compat/src/main/java/dev/aiguard/compat/PythonAnalysis.java`; add
 
 Consumes/produces: existing `PythonAnalysis.analyze(List<SourceFile>, Cancel)` -> `AnalysisResult`; the interface and rule IDs remain stable. Contexts stay private implementation details.
 
-- [ ] Reproduce missing injected provenance with `class Remote: ... self.port = port` and `Remote(port=OpenAI()).run()`. Include cross-file aliases, nested factories and both positional/keyword arguments.
-- [ ] Store instance constructor argument snapshots; bind supported local method arguments and self during evaluation. Do not share memoized AST values across incompatible contexts. Keep unknown unpacking, alternative injection and mutation conservative.
-- [ ] Reproduce missing result-use evidence with `verdict = inspector.consume(answer); if inspector.decide(verdict): return fallback`. Rename inspector, methods, variables and modules in variants; method names must not select rules.
-- [ ] Track the returned value of a source-visible model-content consumer separately from raw content. Emit controlled result-use/source-order observations with source locations; retain UNKNOWN for behavior and full path coverage.
-- [ ] Verify two instances/calls with different clients do not contaminate one another; ignored/reassigned results, unrelated predicates/fields, unknown consumers, mixed returns and decorators do not prove a guard or raw execution violation. Exercise bounded recursion and cancellation.
+- [x] Reproduce missing injected provenance with `class Remote: ... self.port = port` and `Remote(port=OpenAI()).run()`. Include cross-file aliases, nested factories and both positional/keyword arguments.
+- [x] Store instance constructor argument snapshots; bind supported local method arguments and self during evaluation. Do not share memoized AST values across incompatible contexts. Keep unknown unpacking, alternative injection and mutation conservative.
+- [x] Reproduce missing result-use evidence with `verdict = inspector.consume(answer); if inspector.decide(verdict): return fallback`. Rename inspector, methods, variables and modules in variants; method names must not select rules.
+- [x] Track the returned value of a source-visible model-content consumer separately from raw content. Emit controlled result-use/source-order observations with source locations; retain UNKNOWN for behavior and full path coverage.
+- [x] Verify two instances/calls with different clients do not contaminate one another; ignored/reassigned results, unrelated predicates/fields, unknown consumers, mixed returns and decorators do not prove a guard or raw execution violation. Exercise bounded recursion and cancellation.
 
 ### Task 3: Integration and runtime acceptance
 
 Files: native `pom.xml`, version/report entry points and `InfrastructureTest.java`; existing `scripts/verify-runtime-matrix.py`, `scripts/verify-codex-integration.py`; README, rules and new verification record.
 
-- [ ] Set 0.3.1 package/server/report versions and v3.1 rule-set identity; retain schema 1.2 and 26 rules.
-- [ ] Add generic verification options for no parse failures and consumer-result evidence. Requirements apply by language/option, never repository name.
-- [ ] Run `./scripts/build-compatible.sh -q clean verify`; run all compiled native tests with actual JDK 7u79 and JDK 8u40. Check all shipped class versions <= 51.
-- [ ] Use `scripts/verify-runtime-matrix.py` with both JVM paths and all three project roots; compare source digests, assessments and diagnostics between JVMs. Verify no Python parse failures and relevant RAG provenance/result-use evidence.
-- [ ] Install the versioned final JAR and surgically update only this server's JAR path in Codex configuration, preserving a backup and 0.3.0 artifact. Run `scripts/verify-codex-integration.py` for the three projects using the actual configured server.
-- [ ] Independently review evidence/negative cases; compare target HEAD/status digests with the saved baseline. Save exact test counts, JAR hash, scan IDs, evidence deltas and limitations in `docs/python-source-chains-verification.md`; commit the scoped implementation.
+- [x] Set 0.3.1 package/server/report versions and v3.1 rule-set identity; retain schema 1.2 and 26 rules.
+- [x] Add generic verification options for no parse failures and consumer-result evidence. Requirements apply by language/option, never repository name.
+- [x] Run `./scripts/build-compatible.sh -q clean verify`; run all compiled native tests with actual JDK 7u79 and JDK 8u40. Check all shipped class versions <= 51.
+- [x] Use `scripts/verify-runtime-matrix.py` with both JVM paths and all three project roots; compare source digests, assessments and diagnostics between JVMs. Verify no Python parse failures and relevant RAG provenance/result-use evidence.
+- [x] Install the versioned final JAR and surgically update only this server's JAR path in Codex configuration, preserving a backup and 0.3.0 artifact. Run `scripts/verify-codex-integration.py` for the three projects using the actual configured server.
+- [x] Independently review evidence/negative cases; compare target HEAD/status digests with the saved baseline. Save exact test counts, JAR hash, scan IDs, evidence deltas and limitations in `docs/python-source-chains-verification.md`; commit the scoped implementation.

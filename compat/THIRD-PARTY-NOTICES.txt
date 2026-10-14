@@ -39,7 +39,7 @@ JavaParserBase.java upstream SHA-256: b6dc4a43c4765dbf4a493c19e7e88e9900a1feaec3
 */
 
 Python grammar upstream: https://raw.githubusercontent.com/antlr/grammars-v4/89fd36482e8cb68a4e55df021a8adbc7541b52f2/python/python3/
-Local changes: Java package declarations; numeric separator syntax for Python 3; grammar sources generated into the module package.
+Local changes: Java package declarations; numeric separator syntax and case soft-keyword identifiers for Python 3; grammar sources generated into the module package.
 Python3Lexer.g4 upstream SHA-256: 58c4dfa0b12dfb856b7348b99199bf1a3fdc7901d7fc4575ddf9584aeb831c19
 Python3Parser.g4 upstream SHA-256: 74fa61c519832b694718c8006741a045a687725a9f0a06645dfdfa4c7ebce65d
 Java/Python3LexerBase.java upstream SHA-256: f8d057a0cbd0fa0d895d1aa27aa8914c3e85a1eaa95f7161da9a6e617c65f5ec

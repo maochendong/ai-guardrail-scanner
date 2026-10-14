@@ -1,6 +1,6 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.3.0 原生运行于 Java 7/8，提供 19 条 Java 规则与 7 条 Python/RAG 规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.3.1 原生运行于 Java 7/8，提供 19 条 Java 规则与 7 条 Python/RAG 规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
 本项目是 MVP。报告中的 `OBSERVED` 只表示观察到控制或构造，不能解释为安全通过。未发现问题也不能证明防注入效果、鉴权正确性或生产防护有效性。
 
@@ -50,7 +50,7 @@ Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留
 
 可以重复传入 `--allow-root`。允许目录和报告目录由启动 server 的操作员决定，MCP 请求不能扩大权限。stdout 仅用于 JSON-RPC，日志写入 stderr。
 
-本机 Codex 首次接入记录见 [0.1 验收](docs/codex-integration-20261013.md)；自定义网关、Guard 和 function calling 的升级与两个真实项目复验见 [0.2 验收](docs/custom-gateway-verification.md)。原生 Java 7/8、Python/RAG 与三个项目复验见 [0.3 验收](docs/java7-python-verification.md)。流程完成不代表应用安全通过。
+本机 Codex 首次接入记录见 [0.1 验收](docs/codex-integration-20261013.md)；自定义网关、Guard 和 function calling 的升级与两个真实项目复验见 [0.2 验收](docs/custom-gateway-verification.md)。原生 Java 7/8、Python/RAG 见 [0.3 验收](docs/java7-python-verification.md)，Python 软关键字、客户端注入与校验返回值使用见 [0.3.1 验收](docs/python-source-chains-verification.md)。流程完成不代表应用安全通过。
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -75,14 +75,14 @@ Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留
 
 七个控制域为 L1 提示注入、L2 授权与隔离、L3 数据泄露、L4 资源限制、L5 内容审核、L6 审计追踪、L7 输出与执行安全。编号不代表安全等级。完整规则及语法边界见 [规则支持说明](docs/rules.md)。
 
-同一条规则可以输出不同状态的多条评估记录，例如一个调用路径为 `VIOLATED`，另一个为 `UNKNOWN`；发现违反不会隐藏其他路径的未知状态。覆盖表及 CLI 摘要统计的是评估记录，不是独立漏洞总数或代码位置数。每条评估最多导出 16 个位置，超过上限会产生 `RESULT_LIMIT`，并将完整性标为不足。
+同一条规则可以输出不同状态的多条评估记录，例如一个调用路径为 `VIOLATED`，另一个为 `UNKNOWN`；发现违反不会隐藏其他路径的未知状态。覆盖表及 CLI 摘要统计的是评估记录，不是独立漏洞总数或代码位置数。每条评估最多导出 16 个位置，超过上限会产生 `RESULT_LIMIT` 或 `PYTHON_RESULT_LIMIT`，并将完整性标为不足。
 
 配置声明或函数名本身不能证明围栏有效。同步调用的控制也不能自动证明流式调用受保护。扫描器无法确定外部网关限额、存储 ACL、自定义安全服务或动态 Bean/AOP 的作用时，应当保留 `UNKNOWN`，由人工补充证据。
 
 ## 执行边界与数据处理
 
 - 扫描只读解析源码与配置，不运行目标的 Maven、Gradle、应用、注解处理器或项目脚本，不下载目标依赖。Maven XML 禁用 DTD 和外部实体，不执行 XML 中的构建或插件声明。
-- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.3.0 未实现。
+- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.3.1 未实现。
 - Java/Python 均使用固定版本的 ANTLR 语法解析，输入按 UTF-8 解码；解析失败或超预算的文件不使用部分语法结果。默认排除 `.git`、构建/依赖/工具目录、Python 虚拟环境与缓存，以及 Java/Python 测试目录；任意目录名只要具有 `pyvenv.cfg` 标记也按虚拟环境排除，`site-packages` 按依赖排除。排除项记录在 `EXCLUDED_SCOPE` 中。配置只选择 `pom.xml`、`build.gradle[.kts]`、`gradle.properties` 与 `application*.properties/yml/yaml`，其他 XML/YAML 不纳入当前配置规则。
 - 默认不跟随符号链接，并拒绝扫描范围逃逸和输入/输出目录重叠。单次最多清点 200,000 个目录条目、选择 10,000 个源码/配置文件，单文件 2 MiB、读取总量 32 MiB；预算耗尽或解析失败会留下诊断，不会计为通过。
 - 兼容实现使用不跟随链接的文件打开、路径、文件身份和修改信息校验，但不提供锚定目录读取或原子快照。每次记录 `FILESYSTEM_RACE_LIMITATION`，扫描期间源码树须保持稳定。

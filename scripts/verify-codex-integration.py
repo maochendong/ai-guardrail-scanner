@@ -7,6 +7,9 @@ parser.add_argument('--project',type=Path,action='append',required=True)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--expect-java-functions',action='store_true')
 parser.add_argument('--expect-python-rag',action='store_true')
+parser.add_argument('--require-python-parse-success',action='store_true')
+parser.add_argument('--require-resolved-python-clients',action='store_true')
+parser.add_argument('--expect-python-guard-results',action='store_true')
 args=parser.parse_args()
 ROOT=Path(__file__).resolve().parent.parent
 OUT=args.output.resolve()
@@ -47,7 +50,7 @@ def tool(name,args,expect_error=False):
     return value
 transcript=[];summary={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.3.0'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.3.1'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -60,7 +63,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==26
-    assert server['serverInfo']['version']=='0.3.0'
+    assert server['serverInfo']['version']=='0.3.1'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -78,10 +81,18 @@ try:
             assert Path(r['artifacts'][fmt]).read_text()==r['content']
         report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
         assert report['schemaVersion']=='1.2'
-        assert report['ruleSetVersion']=='java-python-guardrail-v3'
-        assert report['runtime']['scannerVersion']=='0.3.0'
+        assert report['ruleSetVersion']=='java-python-guardrail-v3.1'
+        assert report['runtime']['scannerVersion']=='0.3.1'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         assert report['securityVerified'] is False
+        if args.require_python_parse_success:
+            assert not any(d['code'] in ['PYTHON_PARSE_FAILED','PYTHON_PARSE_DEPTH',
+                                        'PYTHON_ANALYSIS_LIMIT'] for d in report['diagnostics']),name
+        if args.require_resolved_python_clients and report['project']['languages']==['python']:
+            assert not any(d['code']=='PYTHON_UNRESOLVED_MODEL_CALL' for d in report['diagnostics']),name
+        if args.expect_python_guard_results and report['project']['languages']==['python']:
+            assert any(a['ruleId']=='AI-PY-007' and a['disposition']=='OBSERVED'
+                       and 'consumer-result' in a['explanation'] for a in report['assessments']),name
         assert {a['ruleId'] for a in sarif['runs'][0]['results']}=={
             a['ruleId'] for a in report['assessments'] if a['disposition']=='VIOLATED'}
         expected_ids={r['id'] for r in rules if

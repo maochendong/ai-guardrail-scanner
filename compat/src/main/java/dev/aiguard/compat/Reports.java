@@ -240,7 +240,7 @@ public final class Reports {
             "tool",
             Findings.map(
                 "driver",
-                Findings.map("name", "ai-guardrail-scanner", "version", "0.3.0", "rules", rules)),
+                Findings.map("name", "ai-guardrail-scanner", "version", "0.3.1", "rules", rules)),
             "results",
             results,
             "properties",
