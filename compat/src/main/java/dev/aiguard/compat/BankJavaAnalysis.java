@@ -195,10 +195,7 @@ public final class BankJavaAnalysis {
       return;
     }
     if (node.kind.equals("VAR") || node.kind.equals("FIELD") && node.decl == node) {
-      BankFlow.Stmt result = statement("ASSIGN", node);
-      result.target = key(node);
-      result.expr = expression(node.initializer, depth + 1);
-      out.add(result);
+      valueStatement("ASSIGN", key(node), node.initializer, node, out, depth + 1);
       return;
     }
     if (node.kind.equals("IF")) {
@@ -210,9 +207,8 @@ public final class BankJavaAnalysis {
       return;
     }
     if (node.kind.equals("RETURN") || node.kind.equals("THROW")) {
-      BankFlow.Stmt result = statement(node.kind, node);
-      if (!node.args.isEmpty()) result.expr = expression(node.args.get(0), depth + 1);
-      out.add(result);
+      valueStatement(
+          node.kind, "", node.args.isEmpty() ? null : node.args.get(0), node, out, depth + 1);
       return;
     }
     if (node.kind.equals("TRY")) {
@@ -233,6 +229,10 @@ public final class BankJavaAnalysis {
     if (node.kind.equals("ASSIGN")) {
       Node declaration = graph.declaration(node.receiver);
       if (tracked(declaration, node.receiver) && node.args.size() == 2) {
+        if (node.name.equals("=")) {
+          valueStatement("ASSIGN", key(declaration), node.initializer, node, out, depth + 1);
+          return;
+        }
         BankFlow.Stmt result = statement("ASSIGN", node);
         result.target = key(declaration);
         result.expr = expression(node.initializer, depth + 1);
@@ -263,6 +263,32 @@ public final class BankJavaAnalysis {
     BankFlow.Stmt result = statement("UNKNOWN", node);
     if (node.kind.equals("ASSIGN")) result.expr = expression(node, depth + 1);
     else for (Node child : node.children) statements(child, result.body, method, depth + 1);
+    out.add(result);
+  }
+
+  /**
+   * A conditional which is the entire value can be lowered without moving calls across sibling
+   * arguments or receivers. Nested conditionals in either arm retain their own branch order.
+   */
+  private void valueStatement(
+      String kind, String target, Node value, Node location, List<BankFlow.Stmt> out, int depth) {
+    tick(depth);
+    Node conditional = value;
+    while (conditional != null && conditional.kind.equals("PAREN") && conditional.args.size() == 1)
+      conditional = conditional.args.get(0);
+    if (conditional != null
+        && conditional.kind.equals("CONDITIONAL")
+        && conditional.args.size() == 3) {
+      BankFlow.Stmt branch = statement("IF", conditional);
+      branch.expr = expression(conditional.args.get(0), depth + 1);
+      valueStatement(kind, target, conditional.args.get(1), location, branch.body, depth + 1);
+      valueStatement(kind, target, conditional.args.get(2), location, branch.otherwise, depth + 1);
+      out.add(branch);
+      return;
+    }
+    BankFlow.Stmt result = statement(kind, location);
+    result.target = target;
+    if (value != null) result.expr = expression(value, depth + 1);
     out.add(result);
   }
 
@@ -303,6 +329,7 @@ public final class BankJavaAnalysis {
       JavaGraph.Edge edge = graph.resolve(node);
       result.bindingUncertain =
           result.symbol.length() == 0
+              || node.receiver == null && edge.candidate
               || edge.reasons.contains("AMBIGUOUS_DISPATCH")
               || edge.reasons.contains("TARGET_LIMIT")
               || edge.reasons.contains("UNSUPPORTED_OR_LIMIT");
@@ -452,7 +479,9 @@ public final class BankJavaAnalysis {
       return type.length() == 0 ? "" : type + "#" + call.name;
     }
     JavaGraph.Edge edge = graph.resolve(call);
-    if (!edge.unknown && !edge.candidate && edge.targets.size() == 1)
+    // Preserve a unique lexical target even when virtual dispatch remains a candidate. The caller
+    // marks that binding uncertain; naming the candidate must not establish a trusted source/check.
+    if (!edge.unknown && edge.targets.size() == 1)
       return edge.targets.get(0).owner.qualifiedName + "#" + call.name;
     // Explicit static imports are useful for external APIs, but only when a local
     // declaration of the same name cannot shadow them. Wildcards stay unresolved.

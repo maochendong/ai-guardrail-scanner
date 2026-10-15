@@ -7,6 +7,7 @@ import sys
 import unittest
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 SPEC = importlib.util.spec_from_file_location(
     'release_gate', Path(__file__).resolve().parents[1] / 'verify-release.py')
 release = importlib.util.module_from_spec(SPEC)

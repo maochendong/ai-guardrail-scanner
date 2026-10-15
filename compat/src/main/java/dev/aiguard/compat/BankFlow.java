@@ -43,7 +43,7 @@ public final class BankFlow {
   }
 
   public static final class Stmt {
-    /** ASSIGN, EXPR, IF, RETURN, YIELD, THROW, TRY, or UNKNOWN. */
+    /** ASSIGN, EXPR, IF, RETURN, YIELD, THROW, TRY, ITERATE, or UNKNOWN. */
     public String kind, target = "", path = "";
 
     public int line = 1;

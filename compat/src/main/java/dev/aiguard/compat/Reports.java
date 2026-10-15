@@ -15,9 +15,13 @@ public final class Reports {
 
   public static Map<String, String> write(Map<String, Object> report, Path directory)
       throws IOException {
-    try (Prepared prepared = prepare(report, directory, new Cancel() {
-      public void check() {}
-    })) {
+    try (Prepared prepared =
+        prepare(
+            report,
+            directory,
+            new Cancel() {
+              public void check() {}
+            })) {
       prepared.publish();
       return prepared.documents;
     }
@@ -164,6 +168,8 @@ public final class Reports {
           .append(" | ")
           .append(entry.getValue())
           .append(" |\n");
+    out.append("\n复核动作区分补充映射、扩展分析、定位证据与人工确认。")
+        .append("仅 CONFIRM_SCOPE / VERIFY_RUNTIME 标为必须人工复核；OPEN 表示尚未提供所需证据，不改变规则结论。\n");
     out.append("\n## 诊断及未评估范围\n\n");
     for (Map<String, Object> d : list(report, "diagnostics"))
       out.append("- ")
@@ -208,6 +214,45 @@ public final class Reports {
                 .append(escape(reason.get("explanation")))
                 .append('\n');
       }
+      appendReview(out, a, "");
+      if (a.get("siteAssessments") instanceof List<?>) {
+        for (Map<String, Object> site : list(a, "siteAssessments")) {
+          if (!"UNKNOWN".equals(site.get("disposition"))) continue;
+          out.append("\n调用点 UNKNOWN：")
+              .append(escape(site.get("path")))
+              .append(" 第 ")
+              .append(escape(site.get("line")))
+              .append(" 行\n");
+          if (site.get("unknownReasons") instanceof List<?>)
+            for (Map<String, Object> reason : list(site, "unknownReasons"))
+              out.append("- 调用点原因 ")
+                  .append(escape(reason.get("code")))
+                  .append("：")
+                  .append(escape(reason.get("explanation")))
+                  .append('\n');
+          appendReview(out, site, "调用点");
+        }
+        if (Boolean.TRUE.equals(a.get("siteAssessmentsTruncated")))
+          out.append("- 限制：调用点评估列表已截断；本页复核动作未覆盖全部调用点。\n");
+      }
+      if (a.get("controlReviewSites") instanceof List<?>) {
+        for (Map<String, Object> site : list(a, "controlReviewSites")) {
+          out.append("\n控制复核 UNKNOWN：")
+              .append(escape(site.get("path")))
+              .append(" 第 ")
+              .append(escape(site.get("line")))
+              .append(" 行\n");
+          for (Map<String, Object> reason : optionalList(site, "unknownReasons"))
+            out.append("- 控制复核原因 ")
+                .append(escape(reason.get("code")))
+                .append("：")
+                .append(escape(reason.get("explanation")))
+                .append('\n');
+          appendReview(out, site, "控制复核");
+        }
+        if (Boolean.TRUE.equals(a.get("controlReviewSitesTruncated")))
+          out.append("- 限制：控制复核列表已截断；复核动作未覆盖全部控制调用。\n");
+      }
       for (Map<String, Object> e : list(a, "evidence"))
         out.append("- ")
             .append(escape(e.get("path")))
@@ -225,11 +270,45 @@ public final class Reports {
     return out.toString();
   }
 
+  private static void appendReview(
+      StringBuilder out, Map<String, Object> assessment, String prefix) {
+    if (!(assessment.get("reviewActions") instanceof List<?>)) return;
+    out.append("\n")
+        .append(prefix)
+        .append("必须人工复核：")
+        .append(Boolean.TRUE.equals(assessment.get("manualReviewRequired")) ? "是" : "否")
+        .append("。\n");
+    for (Map<String, Object> action : list(assessment, "reviewActions")) {
+      out.append("- 复核动作 ")
+          .append(escape(action.get("code")))
+          .append(" [")
+          .append(escape(action.get("kind")))
+          .append(" / ")
+          .append(escape(action.get("status")))
+          .append("]；负责角色：")
+          .append(escape(action.get("ownerRole")))
+          .append("；原因：")
+          .append(escape(action.get("reasonCodes")))
+          .append('\n');
+      if (action.get("requiredEvidence") instanceof List<?>)
+        for (Object evidence : (List<?>) action.get("requiredEvidence"))
+          out.append("  - 所需证据：").append(escape(evidence)).append('\n');
+      if (action.get("locations") instanceof List<?>)
+        for (Map<String, Object> location : list(action, "locations"))
+          out.append("  - 定位：")
+              .append(escape(location.get("path")))
+              .append(" 第 ")
+              .append(escape(location.get("line")))
+              .append(" 行\n");
+    }
+  }
+
   private static Map<String, Object> sarif(Map<String, Object> report) {
     Map<String, Integer> indexes = new LinkedHashMap<String, Integer>();
     List<Map<String, Object>> rules = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> results = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> unknownDetails = new ArrayList<Map<String, Object>>();
+    List<Map<String, Object>> otherReviewDetails = new ArrayList<Map<String, Object>>();
     Map<String, Object> coverage = new LinkedHashMap<String, Object>();
     List<String> unassessed = new ArrayList<String>();
     for (String domain : DOMAINS) {
@@ -247,6 +326,8 @@ public final class Reports {
     }
     for (Map<String, Object> a : list(report, "assessments")) {
       if ("UNKNOWN".equals(a.get("disposition"))) unknownDetails.add(unknownDetail(a));
+      else if (a.get("reviewActions") instanceof List<?> && !list(a, "reviewActions").isEmpty())
+        otherReviewDetails.add(unknownDetail(a));
       String id = String.valueOf(a.get("ruleId"));
       if (!indexes.containsKey(id)) {
         indexes.put(id, rules.size());
@@ -342,6 +423,8 @@ public final class Reports {
             Unknowns.summarize(list(report, "assessments")),
             "unknownAssessmentsDetails",
             unknownDetails,
+            "reviewAssessmentsDetails",
+            otherReviewDetails,
             "coverage",
             coverage,
             "unassessedDomains",
@@ -351,7 +434,13 @@ public final class Reports {
             "tool",
             Findings.map(
                 "driver",
-                Findings.map("name", "ai-guardrail-scanner", "version", "0.5.0", "rules", rules)),
+                Findings.map(
+                    "name",
+                    "ai-guardrail-scanner",
+                    "version",
+                    scannerVersion(report),
+                    "rules",
+                    rules)),
             "results",
             results,
             "properties",
@@ -375,6 +464,15 @@ public final class Reports {
     return "INSUFFICIENT_EVIDENCE（证据不足）";
   }
 
+  private static String scannerVersion(Map<String, Object> report) {
+    Object runtime = report.get("runtime");
+    if (runtime instanceof Map<?, ?>) {
+      Object version = ((Map<?, ?>) runtime).get("scannerVersion");
+      if (version instanceof String && !((String) version).isEmpty()) return (String) version;
+    }
+    return "unknown";
+  }
+
   /** Only report metadata is exported; analysis internals and target source values are excluded. */
   private static Map<String, Object> unknownDetail(Map<String, Object> assessment) {
     Map<String, Object> out = new LinkedHashMap<String, Object>();
@@ -390,7 +488,11 @@ public final class Reports {
             "limitations",
             "profile",
             "mappedPathOutcomes",
-            "unknownCategory")) if (assessment.containsKey(key)) out.put(key, assessment.get(key));
+            "unknownCategory",
+            "manualReviewRequired",
+            "controlReviewSitesTruncated",
+            "siteAssessmentsTruncated"))
+      if (assessment.containsKey(key)) out.put(key, assessment.get(key));
     List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     if (assessment.get("unknownReasons") instanceof List<?>)
       for (Map<String, Object> reason : list(assessment, "unknownReasons"))
@@ -401,14 +503,59 @@ public final class Reports {
                 "explanation", reason.get("explanation")));
     out.put("unknownReasons", reasons);
     List<Map<String, Object>> evidence = new ArrayList<Map<String, Object>>();
-    for (Map<String, Object> item : list(assessment, "evidence")) {
+    for (Map<String, Object> item : optionalList(assessment, "evidence")) {
       Map<String, Object> location = new LinkedHashMap<String, Object>();
       for (String key : Arrays.asList("path", "line", "detail", "role", "nodeId"))
         if (item.containsKey(key)) location.put(key, item.get(key));
       evidence.add(location);
     }
     out.put("evidence", evidence);
+    List<Map<String, Object>> actions = new ArrayList<Map<String, Object>>();
+    for (Map<String, Object> action : optionalList(assessment, "reviewActions")) {
+      Map<String, Object> safe =
+          select(action, "kind", "code", "status", "ownerRole", "reasonCodes", "requiredEvidence");
+      List<Map<String, Object>> locations = new ArrayList<Map<String, Object>>();
+      for (Map<String, Object> location : optionalList(action, "locations"))
+        locations.add(select(location, "path", "line", "nodeId"));
+      safe.put("locations", locations);
+      actions.add(safe);
+    }
+    if (assessment.containsKey("reviewActions")) out.put("reviewActions", actions);
+    for (String siteKey : Arrays.asList("siteAssessments", "controlReviewSites")) {
+      if (!(assessment.get(siteKey) instanceof List<?>)) continue;
+      List<Map<String, Object>> sites = new ArrayList<Map<String, Object>>();
+      for (Map<String, Object> site : list(assessment, siteKey)) {
+        // Nested site lists are not part of the schema and must not recurse into analysis
+        // internals.
+        Map<String, Object> controlled =
+            select(
+                site,
+                "ruleId",
+                "disposition",
+                "unknownCategory",
+                "unknownReasons",
+                "evidence",
+                "reviewActions",
+                "manualReviewRequired");
+        Map<String, Object> safe = unknownDetail(controlled);
+        safe.putAll(select(site, "path", "line"));
+        sites.add(safe);
+      }
+      out.put(siteKey, sites);
+    }
     return out;
+  }
+
+  private static Map<String, Object> select(Map<String, Object> source, String... keys) {
+    Map<String, Object> out = new LinkedHashMap<String, Object>();
+    for (String key : keys) if (source.containsKey(key)) out.put(key, source.get(key));
+    return out;
+  }
+
+  private static List<Map<String, Object>> optionalList(Map<String, Object> source, String key) {
+    return source.get(key) instanceof List<?>
+        ? list(source, key)
+        : new ArrayList<Map<String, Object>>();
   }
 
   private static String relativeUri(String path) {

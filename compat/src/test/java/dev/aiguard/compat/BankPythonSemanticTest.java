@@ -176,7 +176,8 @@ public class BankPythonSemanticTest {
         function(
             adapt("def forward(stream):\n    for part in stream:\n        yield {'text': part}\n"),
             ".forward");
-    assertEquals("UNKNOWN", f.body.get(0).kind);
+    assertEquals("ITERATE", f.body.get(0).kind);
+    assertEquals("part", f.body.get(0).target);
     assertEquals("YIELD", f.body.get(0).body.get(0).kind);
   }
 

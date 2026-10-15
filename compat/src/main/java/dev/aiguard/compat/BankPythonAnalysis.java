@@ -391,7 +391,13 @@ public final class BankPythonAnalysis {
         return;
       }
       if ("For_stmt".equals(k) || "While_stmt".equals(k)) {
-        BankFlow.Stmt s = unknown(n, scope, false, depth + 1);
+        String target = "For_stmt".equals(k) ? text(direct(n, "Exprlist")) : "";
+        // Only a single name has a defined element binding. Unpacking and mutation stay opaque.
+        BankFlow.Stmt s =
+            identifier(target)
+                ? statement("ITERATE", n)
+                : unknown(n, scope, false, depth + 1);
+        if ("ITERATE".equals(s.kind)) s.target = target;
         ParserRuleContext condition = direct(n, "For_stmt".equals(k) ? "Testlist" : "Test");
         if (condition != null) s.expr = expression(condition, scope, depth + 1);
         List<ParserRuleContext> blocks = directs(n, "Block");

@@ -312,12 +312,13 @@ public class BankPythonAnalysisTest {
   }
 
   @Test
-  public void unsupportedLoopKeepsCandidateCallsButNotDefiniteFlow() {
+  public void simpleLoopKeepsElementBindingAndCandidateCalls() {
     BankFlow.Program p =
         adapt("from boundary import send\nfor value in values:\n    send(value)\n");
-    assertEquals("UNKNOWN", p.functions.get(0).body.get(0).kind);
+    assertEquals("ITERATE", p.functions.get(0).body.get(0).kind);
+    assertEquals("value", p.functions.get(0).body.get(0).target);
     assertTrue(symbol(p, "boundary.send"));
-    assertFalse(p.diagnostics.isEmpty());
+    assertTrue(p.diagnostics.isEmpty());
   }
 
   @Test

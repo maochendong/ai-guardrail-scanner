@@ -89,9 +89,9 @@ public final class Scanner {
     Map<String, Object> report =
         Findings.map(
             "schemaVersion",
-            "1.4",
+            "1.5",
             "ruleSetVersion",
-            "java-python-guardrail-v6",
+            "java-python-guardrail-v7",
             "scanId",
             id,
             "createdAt",
@@ -125,7 +125,7 @@ public final class Scanner {
                 "minimumJavaVersion",
                 "1.7",
                 "scannerVersion",
-                "0.5.1"),
+                "0.6.0"),
             "policy",
             policy.metadata(),
             "mappingCoverage",

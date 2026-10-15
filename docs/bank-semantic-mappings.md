@@ -31,6 +31,7 @@
 | `requiresLabel` | sink | 只对指定来源标签要求该控制；已知固定错误文案可跳过，来源不明仍 UNKNOWN。 |
 | `identity: -1` | access/retrieve/recommend | 明确没有身份参数，禁止把 query、top_k、persona 当主体。 |
 | `scope` | sink | `unknown` 为 v2 默认，资源范围未确定；`restricted` 要求权限绑定；`public` 声明公开范围，不产生权限通过结论。 |
+| `when` | call sink，0.6.0 起 | `{"arg":0,"equals":"content"}` 仅对该常量参数值应用边界，用于区分同一事件封装 API 中的内容与状态消息。支持字符串、布尔、数字及 null；仅已知不匹配才能跳过，未知条件输出 `SINK_CONDITION_UNRESOLVED`。不能用于 return/yield 边界。 |
 
 `receivers` 的每项包含 `owner`（完整模块类名）、`field`、`type`，以及可选 `assurance`。它用于绑定 `self.field.method` 的声明类型。构造器允许任意客户端注入时通常只能设 candidate；局部重绑定、反射修改或别名逃逸仍会阻止精确绑定。
 
@@ -50,10 +51,28 @@
 
 JSON、Markdown、SARIF、MCP 状态均带 `unknownSummary`。SARIF 保留原数字 `unknownAssessments`，并增加 `unknownAssessmentsDetails`，不会因只导出违反项而丢失待复核内容。
 
+0.6.0 报告 schema 为 `1.5`。银行评估增加 `siteAssessments`，按相对路径、行号、内部绑定与处置区分有界路径结果，同一位置可以同时存在不同处置；同一 UNKNOWN 位置的多条原因合并保留。每条银行规则最多导出 128 项，超过后 `siteAssessmentsTruncated=true`，后续路径仍参加规则汇总。位置不是独立漏洞数或安全覆盖率。合同符号和源码值不随位置明细导出。
+
+UNKNOWN 的 `reviewActions` 给出 `kind`、`code`、`status: OPEN`、`ownerRole`、`reasonCodes`、`requiredEvidence` 与 `locations`。动作不表示已完成人工审查，也不会改变处置。`manualReviewRequired` 只在具有明确业务/部署语义确认或运行验收动作时为 true。
+
+| 动作 | 下一步 |
+|---|---|
+| `MAP_API` | 补齐或复核实际 API 参数、返回值与来源合同；确认是否确实缺少主体槽位。 |
+| `EXTEND_ANALYSIS` | 用最小复现补接收者、跨函数、流式元素、迭代或预算能力。 |
+| `CONFIRM_SCOPE` | 由身份、业务或数据权限负责人提供可信身份、公开/私有资源范围及控制资格依据。 |
+| `VERIFY_RUNTIME` | 在真实部署中执行拒绝、异常、超时、跨用户/租户、文档撤权与首包释放等负测。 |
+| `TRIAGE_EVIDENCE` | 旧规则只有“未定位/语义未核实”时先定位证据，不直接把所有 UNKNOWN 指派给人工。 |
+
+逐位置原因优先绑定本位置，未访问路径/预算原因单独保留；父规则为 VIOLATED 时也保留其他 UNKNOWN 位置的动作。SARIF 的 `reviewAssessmentsDetails` 保存这类非 UNKNOWN 父规则的复核信息。Markdown 列出具体原因和证据要求。最终运行验收仍须由具备部署环境与业务数据权限的人员完成。
+
+Guard 的 `controlReviewSites` 单独记录实际命中的候选、失败放行或失败语义未知的检查调用（最多 128 项，`controlReviewSitesTruncated` 标示截断）。它与输出位置分开：不计入 `mappedPathOutcomes`，不改变规则处置，不能据此断言某次失败已经释放到客户端。这样即使下游值流尚未打通，也不会隐藏已定位的检查实现复核任务。
+
 `mappingCoverage` 分别给出合同定义数、源码匹配声明数、实际命中调用位置、return/yield 边界、候选绑定、参数绑定失败与分析函数数。位置计数按相对路径、行号和符号去重，同一行同一 API 多次调用可能合并；这些是映射使用统计，不是安全覆盖率。仅有声明不会计作实际调用。
 
 ## 保留的分析边界
 
-本轮支持常量 Map/字典字段、显式构造器和值载体、对象判定、受限 Python receiver 和默认参数，未实现完整跨过程分析。循环/yield、异步 callback、复杂别名、动态分派和数据库级资源绑定仍可能 UNKNOWN。受限循环体中的候选操作只用于暴露待复核位置，不证明执行顺序或所有迭代。
+本轮支持常量 Map/字典字段、显式构造器和值载体、对象判定、受限 Python receiver 和默认参数，未实现完整跨过程分析。0.6.0 对 Java 根赋值/返回条件表达式保留择一分支；调用参数内部的条件表达式仍可能未知。隐式虚调用保留可定位的候选符号，不推断部署实现。
+
+Python 简单 `for NAME in ...` 保存来源与代表性元素，分析零次与一次路径。元素不能继承整个集合的校验证明，单次迭代也不能证明后续迭代或汇总值安全。流式释放缺少先行同值 Guard 时记录 `STREAM_RELEASE_WITHOUT_BOUND_GUARD`；它表示当前映射下未建立先行证明，不能单独断言外部控制失效。循环/yield、异步 callback、复杂别名、动态分派和数据库级资源绑定仍可能 UNKNOWN。
 
 `OBSERVED` 仅表示已建模的局部路径和操作员合同前提下观察到控制使用。所有报告仍为 `complete=false`、`securityVerified=false`；无违反项的门禁仍是 `REVIEW`。

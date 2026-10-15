@@ -9,6 +9,9 @@ public final class BankAnalysis {
   private final BankPolicy policy;
   private final Cancel cancel;
   private final Map<String, Outcome> outcomes = new LinkedHashMap<String, Outcome>();
+  private final Map<String, Map<String, Object>> guardReviewSites =
+      new LinkedHashMap<String, Map<String, Object>>();
+  private boolean guardReviewTruncated;
   private final Map<String, String> literals = new HashMap<String, String>();
   private int operations, serial;
   private boolean incomplete;
@@ -56,8 +59,11 @@ public final class BankAnalysis {
   }
 
   public static BankAnalysis analyze(
-      Inventory inventory, BankPolicy policy, Cancel cancel,
-      JavaSyntax.Cache javaSyntax, PythonSyntax.Cache pythonSyntax) {
+      Inventory inventory,
+      BankPolicy policy,
+      Cancel cancel,
+      JavaSyntax.Cache javaSyntax,
+      PythonSyntax.Cache pythonSyntax) {
     if (policy.contractCount() == 0 || !policy.matchesSourceDigest(inventory.digest)) {
       BankFlow.Program empty = new BankFlow.Program();
       empty.diagnostics.add(
@@ -74,8 +80,10 @@ public final class BankAnalysis {
       missing.finish();
       return missing;
     }
-    BankFlow.Program java = BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel, policy, javaSyntax);
-    BankFlow.Program python = BankPythonAnalysis.adapt(inventory.python, cancel, policy, pythonSyntax);
+    BankFlow.Program java =
+        BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel, policy, javaSyntax);
+    BankFlow.Program python =
+        BankPythonAnalysis.adapt(inventory.python, cancel, policy, pythonSyntax);
     java.functions.addAll(python.functions);
     java.diagnostics.addAll(python.diagnostics);
     java.incompletePaths.addAll(python.incompletePaths);
@@ -141,6 +149,8 @@ public final class BankAnalysis {
     Proof decision;
     boolean accepted = true;
     boolean knownLiteral;
+    boolean iterationElement;
+    Object literal;
     BankPolicy.Contract pending;
     Proof pendingProof;
     final Set<String> labels = new HashSet<String>();
@@ -159,6 +169,9 @@ public final class BankAnalysis {
   private static final class State {
     final Map<String, Value> vars = new HashMap<String, Value>();
     final Map<String, Proof> proofs = new LinkedHashMap<String, Proof>();
+    // Observed checks aid diagnosis even when opaque arguments prevent granting a proof.
+    final Map<String, Proof> checks = new LinkedHashMap<String, Proof>();
+    final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     final Map<String, Boolean> conditions = new HashMap<String, Boolean>();
     final Set<String> invalidated = new HashSet<String>();
     boolean uncertain;
@@ -171,6 +184,8 @@ public final class BankAnalysis {
       State copy = new State();
       copy.vars.putAll(vars);
       copy.proofs.putAll(proofs);
+      copy.checks.putAll(checks);
+      copy.reasons.addAll(reasons);
       copy.conditions.putAll(conditions);
       copy.invalidated.addAll(invalidated);
       copy.uncertain = uncertain;
@@ -188,6 +203,9 @@ public final class BankAnalysis {
     final Set<String> seen = new HashSet<String>();
     final List<Map<String, Object>> evidence = new ArrayList<Map<String, Object>>();
     final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
+    final Map<String, Map<String, Object>> siteAssessments =
+        new LinkedHashMap<String, Map<String, Object>>();
+    boolean sitesTruncated;
   }
 
   private static final class Limit extends RuntimeException {
@@ -250,6 +268,44 @@ public final class BankAnalysis {
               walk(statement.body, branch(statement.expr, state.copy(), true, 0), depth + 1));
           next.addAll(
               walk(statement.otherwise, branch(statement.expr, state.copy(), false, 0), depth + 1));
+        } else if ("ITERATE".equals(statement.kind)) {
+          Value iterable = eval(statement.expr, state, 0);
+          State zero = state.copy(), iteration = state.copy();
+          zero.uncertain = iteration.uncertain = true;
+          zero.proofs.clear();
+          iteration.proofs.clear();
+          zero.epoch++;
+          iteration.epoch++;
+          reason(
+              zero.reasons,
+              "UNSUPPORTED",
+              "ITERATION_FLOW_BOUNDED",
+              "Only zero and one representative iteration are modeled; later iterations remain"
+                  + " unresolved.");
+          iteration.reasons.clear();
+          iteration.reasons.addAll(zero.reasons);
+          Value element = fresh(statement.expr);
+          inherit(element, iterable);
+          element.iterationElement = true;
+          element.opaque =
+              iterable.opaque
+                  || iterable.labels.isEmpty()
+                  || state.invalidated.contains(iterable.id);
+          if (element.opaque)
+            reason(
+                element.reasons,
+                "UNSUPPORTED",
+                "STREAM_ELEMENT_UNRESOLVED",
+                "The iteration source binding or element semantics is not fully established.");
+          iteration.vars.put(statement.target, element);
+          next.addAll(walk(statement.otherwise, Arrays.asList(zero), depth + 1));
+          for (State candidate : walk(statement.body, Arrays.asList(iteration), depth + 1)) {
+            // A check of one element cannot certify another iteration or an aggregate result.
+            candidate.proofs.clear();
+            candidate.epoch++;
+            if (!candidate.stopped.isEmpty()) next.add(candidate);
+            else next.addAll(walk(statement.otherwise, Arrays.asList(candidate), depth + 1));
+          }
         } else if ("TRY".equals(statement.kind)) {
           List<State> previousFrame = exceptionFrame;
           List<State> thrown = new ArrayList<State>();
@@ -318,6 +374,7 @@ public final class BankAnalysis {
         merged.uncertain = true;
         merged.proofs.clear();
         merged.conditions.clear();
+        merged.checks.clear();
         merged.epoch++;
         groups.put(key, merged);
       } else {
@@ -326,6 +383,8 @@ public final class BankAnalysis {
         for (String name : names)
           merged.vars.put(name, join(merged.vars.get(name), state.vars.get(name)));
         merged.invalidated.addAll(state.invalidated);
+        for (Map<String, Object> reason : state.reasons)
+          if (!merged.reasons.contains(reason)) merged.reasons.add(reason);
         merged.epoch = Math.max(merged.epoch, state.epoch + 1);
         merged.returnValue = join(merged.returnValue, state.returnValue);
       }
@@ -427,6 +486,7 @@ public final class BankAnalysis {
       }
       value.id = known;
       value.knownLiteral = true;
+      value.literal = expr.literal;
       if (expr.literal instanceof Boolean) value.bool = (Boolean) expr.literal;
       return value;
     }
@@ -478,6 +538,11 @@ public final class BankAnalysis {
         && Arrays.asList("!", "not").contains(expr.operator)) {
       Value value = copy(args.get(0));
       if (value.bool != null) value.bool = !value.bool;
+      else if (value.knownLiteral) {
+        value.knownLiteral = false;
+        value.literal = null;
+        value.opaque = true;
+      }
       value.accepted = !value.accepted;
       value.sense = !value.sense;
       return value;
@@ -502,6 +567,11 @@ public final class BankAnalysis {
           value.accepted = !value.accepted;
           value.sense = !value.sense;
           if (value.bool != null) value.bool = !value.bool;
+        }
+        if (value.bool == null && value.knownLiteral) {
+          value.knownLiteral = false;
+          value.literal = null;
+          value.opaque = true;
         }
         return value;
       }
@@ -545,6 +615,10 @@ public final class BankAnalysis {
           if ("redaction".equals(contract.control)) {
             value.id = "v" + (++serial);
             value.redacted = !candidate;
+            // Redaction declares a property of the returned value, not literal/member equality.
+            value.knownLiteral = false;
+            value.literal = null;
+            value.members.clear();
             value.trusted = false;
             value.decision = null;
             value.pending = null;
@@ -559,17 +633,19 @@ public final class BankAnalysis {
           return value;
         }
         if ("check".equals(contract.kind)) {
+          reviewGuardCall(contract, expr, candidate);
           Value value = fresh(expr);
           List<Value> checked = select(args, contract.args);
+          Proof proof = new Proof();
+          proof.key = key(contract.control, checked);
+          proof.epoch = state.epoch;
+          proof.assured = !candidate;
+          proof.failureOpen = "open".equals(contract.failureMode);
+          proof.failureUnknown = "unknown".equals(contract.failureMode);
+          proof.evidence =
+              location(expr, "control", "Mapped check for these exact argument values.");
+          state.checks.put(proof.key, proof);
           if (!opaque(checked, state)) {
-            Proof proof = new Proof();
-            proof.key = key(contract.control, checked);
-            proof.epoch = state.epoch;
-            proof.assured = !candidate;
-            proof.failureOpen = "open".equals(contract.failureMode);
-            proof.failureUnknown = "unknown".equals(contract.failureMode);
-            proof.evidence =
-                location(expr, "control", "Mapped check for these exact argument values.");
             value.accepted = contract.accept;
             if ("normal-return".equals(contract.mode)) state.proofs.put(proof.key, proof);
             else if (!contract.decisionSymbol.isEmpty()) {
@@ -580,7 +656,14 @@ public final class BankAnalysis {
           return value;
         }
         State sinkState = state.copy();
-        if (candidate) sinkState.uncertain = true;
+        if (candidate) {
+          sinkState.uncertain = true;
+          reason(
+              sinkState.reasons,
+              "UNSUPPORTED",
+              "RECEIVER_BINDING_UNRESOLVED",
+              "The mapped sink binding is a candidate and cannot establish a definite boundary.");
+        }
         sink(contract, expr, args, sinkState);
         return unknown(expr);
       }
@@ -622,6 +705,65 @@ public final class BankAnalysis {
     }
     if (!expr.args.isEmpty() || expr.receiver != null) invalidateCall(state, args);
     return unknown(expr);
+  }
+
+  /** Check implementation review is independent of whether its result reaches a release. */
+  private void reviewGuardCall(
+      BankPolicy.Contract contract, BankFlow.Expr expr, boolean candidate) {
+    if (!"guard".equals(contract.control)) return;
+    List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
+    if (candidate)
+      reason(
+          reasons,
+          "INSUFFICIENT_EVIDENCE",
+          "CONTROL_ASSURANCE_UNVERIFIED",
+          "The called check or its runtime binding is a candidate; its security role requires"
+              + " qualification.");
+    if ("open".equals(contract.failureMode))
+      reason(
+          reasons,
+          "INSUFFICIENT_EVIDENCE",
+          "GUARD_FAILURE_OPEN",
+          "An actually called check is mapped as failure-open; this observation alone does not"
+              + " prove a later unprotected release.");
+    else if ("unknown".equals(contract.failureMode))
+      reason(
+          reasons,
+          "INSUFFICIENT_EVIDENCE",
+          "GUARD_FAILURE_UNVERIFIED",
+          "An actually called check has unverified failure behavior; its relation to output"
+              + " requires separate evidence.");
+    if (reasons.isEmpty()) return;
+    String key = site(expr);
+    Map<String, Object> existing = guardReviewSites.get(key);
+    if (existing != null) {
+      mergeDetails(existing, "unknownReasons", reasons, false);
+      return;
+    }
+    if (guardReviewSites.size() >= 128) {
+      guardReviewTruncated = true;
+      return;
+    }
+    guardReviewSites.put(
+        key,
+        Findings.map(
+            "ruleId",
+            BankPolicy.GUARD,
+            "path",
+            expr.path,
+            "line",
+            expr.line,
+            "disposition",
+            "UNKNOWN",
+            "unknownReasons",
+            reasons,
+            "evidence",
+            Arrays.asList(
+                location(
+                    expr,
+                    "control",
+                    "Located mapped check requiring semantic review; output reachability is"
+                        + " evaluated separately."))));
   }
 
   private static final class Binding {
@@ -733,7 +875,8 @@ public final class BankAnalysis {
   }
 
   private boolean relevant(List<BankFlow.Stmt> body, int depth) {
-    if (depth > 64) return true;
+    cancel.check();
+    if (depth > 256) return true;
     for (BankFlow.Stmt statement : body) {
       if (relevant(statement.expr, depth + 1)
           || relevant(statement.body, depth + 1)
@@ -747,7 +890,8 @@ public final class BankAnalysis {
 
   private boolean relevant(BankFlow.Expr expr, int depth) {
     if (expr == null) return false;
-    if (depth > 64) return true;
+    cancel.check();
+    if (depth > 256) return true;
     if (!policy.contractsForSymbol(expr.symbol).isEmpty() || relevant(expr.receiver, depth + 1))
       return true;
     for (BankFlow.Expr arg : expr.args) if (relevant(arg, depth + 1)) return true;
@@ -761,7 +905,8 @@ public final class BankAnalysis {
   }
 
   private void related(List<BankFlow.Stmt> body, int depth) {
-    if (depth > 64) {
+    cancel.check();
+    if (depth > 256) {
       limitedRules.addAll(declaredRules);
       return;
     }
@@ -776,7 +921,8 @@ public final class BankAnalysis {
 
   private void related(BankFlow.Expr expr, int depth) {
     if (expr == null) return;
-    if (depth > 64) {
+    cancel.check();
+    if (depth > 256) {
       limitedRules.addAll(declaredRules);
       return;
     }
@@ -833,6 +979,7 @@ public final class BankAnalysis {
   private void inherit(Value value, Value source) {
     value.labels.addAll(source.labels);
     value.sensitive |= source.sensitive;
+    value.iterationElement |= source.iterationElement;
     for (Map<String, Object> item : source.reasons)
       if (!value.reasons.contains(item)) value.reasons.add(item);
     for (Map<String, Object> item : source.trace) append(value.trace, item);
@@ -850,6 +997,7 @@ public final class BankAnalysis {
   private void invalidateCall(State state, List<Value> args) {
     if (!state.proofs.isEmpty()) state.uncertain = true;
     state.proofs.clear();
+    state.checks.clear();
     state.epoch++;
     Set<String> touched = new HashSet<String>();
     for (Value arg : args) collectTouched(arg, touched, 0);
@@ -890,6 +1038,8 @@ public final class BankAnalysis {
     value.pending = source.pending;
     value.pendingProof = source.pendingProof;
     value.knownLiteral = source.knownLiteral;
+    value.iterationElement = source.iterationElement;
+    value.literal = source.literal;
     return value;
   }
 
@@ -913,6 +1063,25 @@ public final class BankAnalysis {
 
   private void sink(
       BankPolicy.Contract contract, BankFlow.Expr expr, List<Value> args, State state) {
+    if (contract.whenArg >= 0) {
+      Value discriminator = args.get(contract.whenArg);
+      if (discriminator.knownLiteral
+          && !discriminator.opaque
+          && !state.invalidated.contains(discriminator.id)) {
+        if (!sameLiteral(
+            discriminator.bool == null ? discriminator.literal : discriminator.bool,
+            contract.whenEquals)) return;
+      } else {
+        state = state.copy();
+        state.uncertain = true;
+        reason(
+            state.reasons,
+            "UNSUPPORTED",
+            "SINK_CONDITION_UNRESOLVED",
+            "The mapped boundary discriminator is not a known constant; this candidate cannot be"
+                + " skipped.");
+      }
+    }
     List<Value> data = select(args, contract.args);
     if (!contract.valuePath.isEmpty()) {
       List<Value> projected = new ArrayList<Value>();
@@ -920,7 +1089,14 @@ public final class BankAnalysis {
         for (String member : contract.valuePath) {
           Value next = state.invalidated.contains(value.id) ? null : value.members.get(member);
           if (next == null) {
-            value = unknown(expr);
+            Value missing = unknown(expr);
+            inherit(missing, value);
+            reason(
+                missing.reasons,
+                "UNSUPPORTED",
+                "VALUE_PROJECTION_UNRESOLVED",
+                "The mapped output field cannot be resolved from the value on this path.");
+            value = missing;
             break;
           }
           value = next;
@@ -951,6 +1127,21 @@ public final class BankAnalysis {
     else if ("access".equals(contract.channel) || "retrieve".equals(contract.channel)) {
       if ("public".equals(contract.scope)) return;
       if (contract.identity < 0 || "unknown".equals(contract.scope)) {
+        state = state.copy();
+        if (contract.identity < 0)
+          reason(
+              state.reasons,
+              "INSUFFICIENT_EVIDENCE",
+              "IDENTITY_SLOT_MISSING",
+              "The reviewed API mapping has no identity argument; determine whether upstream or"
+                  + " storage enforcement binds the resource to a subject.");
+        if ("unknown".equals(contract.scope))
+          reason(
+              state.reasons,
+              "INSUFFICIENT_EVIDENCE",
+              "RESOURCE_SCOPE_UNCLASSIFIED",
+              "Whether the resource is public, user-scoped or tenant-scoped has not been"
+                  + " established.");
         boolean unresolvedScope = "unknown".equals(contract.scope);
         record(BankPolicy.IAM, expr, scoped, state, false, null, unresolvedScope);
         if ("retrieve".equals(contract.channel))
@@ -973,6 +1164,19 @@ public final class BankAnalysis {
       check(BankPolicy.CAPABILITY, "capability", expr, data, state, true);
   }
 
+  private static boolean sameLiteral(Object actual, Object expected) {
+    if (actual instanceof Number && expected instanceof Number) {
+      try {
+        return new java.math.BigDecimal(actual.toString())
+                .compareTo(new java.math.BigDecimal(expected.toString()))
+            == 0;
+      } catch (NumberFormatException unsupported) {
+        return false;
+      }
+    }
+    return Objects.equals(actual, expected);
+  }
+
   private void check(
       String id,
       String control,
@@ -981,16 +1185,56 @@ public final class BankAnalysis {
       State state,
       boolean extra) {
     Proof proof = state.proofs.get(key(control, values));
+    Proof seenCheck = state.checks.get(key(control, values));
+    state = state.copy();
     boolean identityUnknown =
         (BankPolicy.IAM.equals(id) || BankPolicy.SUITABILITY.equals(id))
             && (values.isEmpty() || !values.get(0).identityKnown);
+    if (identityUnknown)
+      reason(
+          state.reasons,
+          "INSUFFICIENT_EVIDENCE",
+          "IDENTITY_TRUST_UNVERIFIED",
+          "This subject value has no established trusted identity provenance across the analyzed"
+              + " boundary.");
+    if (seenCheck != null) {
+      if (!seenCheck.assured)
+        reason(
+            state.reasons,
+            "INSUFFICIENT_EVIDENCE",
+            "CONTROL_ASSURANCE_UNVERIFIED",
+            "The located check is only a candidate control; its security purpose and binding"
+                + " require qualification.");
+      if ("guard".equals(control) && seenCheck.failureOpen)
+        reason(
+            state.reasons,
+            "INSUFFICIENT_EVIDENCE",
+            "GUARD_FAILURE_OPEN",
+            "The called check is mapped as allowing failures; an accepted result alone cannot"
+                + " establish fail-closed behavior.");
+      else if ("guard".equals(control) && seenCheck.failureUnknown)
+        reason(
+            state.reasons,
+            "INSUFFICIENT_EVIDENCE",
+            "GUARD_FAILURE_UNVERIFIED",
+            "The called check has unverified rejection, exception or timeout behavior.");
+    }
+    boolean element = false;
+    for (Value value : values) element |= value.iterationElement;
+    if ("guard".equals(control) && element && proof == null)
+      reason(
+          state.reasons,
+          "UNSUPPORTED",
+          "STREAM_RELEASE_WITHOUT_BOUND_GUARD",
+          "No accepted mapped Guard is bound to this iteration element before its release; later"
+              + " checks cannot protect an earlier release.");
     record(
         id,
         expr,
         values,
         state,
         proof != null && extra && proof.assured && !proof.failureOpen && !proof.failureUnknown,
-        proof,
+        proof == null ? seenCheck : proof,
         identityUnknown || (proof != null && (!proof.assured || proof.failureUnknown)));
   }
 
@@ -1010,26 +1254,30 @@ public final class BankAnalysis {
     }
     boolean unknown = state.uncertain || opaque(values, state) || noClassification;
     String disposition = unknown ? "UNKNOWN" : covered ? "OBSERVED" : "VIOLATED";
-    if (!outcome.seen.add(expr.path + ":" + expr.line + ":" + disposition)) return;
-    outcome.sites++;
+    boolean newSite = outcome.seen.add(site(expr) + ":" + disposition);
+    if (newSite) outcome.sites++;
     outcome.unknown |= unknown;
+    List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     if (unknown) {
+      reasons.addAll(state.reasons);
+      for (Value value : values)
+        for (Map<String, Object> item : value.reasons)
+          if (!reasons.contains(item)) reasons.add(item);
       if (state.uncertain || opaque(values, state))
         reason(
-            outcome.reasons,
+            reasons,
             "UNSUPPORTED",
             "LOCAL_FLOW_UNRESOLVED",
             "Dynamic binding, mutation, cross-function values or local control flow is not fully"
                 + " modeled.");
       if (noClassification)
         reason(
-            outcome.reasons,
+            reasons,
             "INSUFFICIENT_EVIDENCE",
             "SEMANTIC_ASSURANCE_MISSING",
             "Trusted identity, data scope or control failure semantics is not established.");
-      for (Value value : values)
-        for (Map<String, Object> item : value.reasons)
-          if (!outcome.reasons.contains(item)) outcome.reasons.add(item);
+      for (Map<String, Object> item : reasons)
+        if (!outcome.reasons.contains(item)) outcome.reasons.add(item);
     }
     outcome.violated |= "VIOLATED".equals(disposition);
     List<Map<String, Object>> chain = new ArrayList<Map<String, Object>>();
@@ -1046,11 +1294,42 @@ public final class BankAnalysis {
                 : covered
                     ? "Mapped sink uses the checked/transformed value on this path."
                     : "Mapped sink has a local path without its required bound control."));
+    String siteKey = site(expr) + ":" + disposition;
+    Map<String, Object> detail = outcome.siteAssessments.get(siteKey);
+    if (detail == null && outcome.siteAssessments.size() < 128) {
+      detail =
+          Findings.map(
+              "ruleId",
+              id,
+              "path",
+              expr.path,
+              "line",
+              expr.line,
+              "disposition",
+              disposition,
+              "unknownReasons",
+              new ArrayList<Map<String, Object>>(),
+              "evidence",
+              new ArrayList<Map<String, Object>>());
+      outcome.siteAssessments.put(siteKey, detail);
+    } else if (detail == null) outcome.sitesTruncated = true;
+    if (detail != null) {
+      mergeDetails(detail, "unknownReasons", reasons, false);
+      mergeDetails(detail, "evidence", chain, true);
+    }
     if ("VIOLATED".equals(disposition)) {
       chain.addAll(outcome.evidence);
       outcome.evidence.clear();
       for (Map<String, Object> e : chain) append(outcome.evidence, e);
     } else for (Map<String, Object> e : chain) append(outcome.evidence, e);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void mergeDetails(
+      Map<String, Object> detail, String key, List<Map<String, Object>> values, boolean bounded) {
+    List<Map<String, Object>> target = (List<Map<String, Object>>) detail.get(key);
+    for (Map<String, Object> value : values)
+      if (!target.contains(value) && (!bounded || target.size() < 16)) target.add(value);
   }
 
   private static void append(List<Map<String, Object>> list, Map<String, Object> evidence) {
@@ -1178,6 +1457,19 @@ public final class BankAnalysis {
       }
       finding.put("profile", policy.profile);
       finding.put("mappedPathOutcomes", outcome == null ? 0 : outcome.sites);
+      finding.put(
+          "siteAssessments",
+          outcome == null
+              ? Collections.<Map<String, Object>>emptyList()
+              : new ArrayList<Map<String, Object>>(outcome.siteAssessments.values()));
+      finding.put("siteAssessmentsTruncated", outcome != null && outcome.sitesTruncated);
+      finding.put(
+          "controlReviewSites",
+          BankPolicy.GUARD.equals(id)
+              ? new ArrayList<Map<String, Object>>(guardReviewSites.values())
+              : Collections.<Map<String, Object>>emptyList());
+      finding.put(
+          "controlReviewSitesTruncated", BankPolicy.GUARD.equals(id) && guardReviewTruncated);
       assessments.add(finding);
     }
   }

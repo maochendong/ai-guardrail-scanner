@@ -54,6 +54,11 @@ public final class BankPolicy {
     public final Map<String, Object> defaults;
     public final boolean accept;
 
+    /** Optional constant argument discriminator for a call sink, never a name heuristic. */
+    public final int whenArg;
+
+    public final Object whenEquals;
+
     private Contract(JsonObject o, int version) throws IOException {
       symbol = symbol(o, "symbol", version == 2);
       arity = integer(o, "arity", 0, 32);
@@ -71,6 +76,8 @@ public final class BankPolicy {
           dataScope = "restricted",
           decision = "";
       int a = -1, i = -1, decisionSlot = -1;
+      int conditionArg = -1;
+      Object conditionValue = null;
       boolean accepted = true;
       List<Integer> slots = new ArrayList<Integer>(), outbound = new ArrayList<Integer>();
       List<String> names = new ArrayList<String>(), path = new ArrayList<String>();
@@ -157,7 +164,7 @@ public final class BankPolicy {
           required.add("channel");
           ch = one(o, "channel", "egress", "access", "release", "recommend", "retrieve", "tool");
           if (version == 2) {
-            allowed.addAll(set("boundary", "requiresLabel", "valuePath", "scope"));
+            allowed.addAll(set("boundary", "requiresLabel", "valuePath", "scope", "when"));
             edge = optionalOne(o, "boundary", "call", "call", "return", "yield");
             dataScope = optionalOne(o, "scope", "unknown", "restricted", "public", "unknown");
             if (o.has("requiresLabel"))
@@ -180,6 +187,13 @@ public final class BankPolicy {
                 if (name.length() == 0 || name.length() > 128) throw invalid();
                 path.add(name);
               }
+            }
+            if (o.has("when")) {
+              if (!"call".equals(edge) || !o.get("when").isJsonObject()) throw invalid();
+              JsonObject condition = o.getAsJsonObject("when");
+              keys(condition, set("arg", "equals"));
+              conditionArg = integer(condition, "arg", 0, arity - 1);
+              conditionValue = scalar(condition.get("equals"));
             }
           }
           int max = "call".equals(edge) ? arity - 1 : arity;
@@ -204,6 +218,8 @@ public final class BankPolicy {
       arg = a;
       identity = i;
       accept = accepted;
+      whenArg = conditionArg;
+      whenEquals = conditionValue;
       assurance = aLevel;
       failureMode = failure;
       mode = checkMode;

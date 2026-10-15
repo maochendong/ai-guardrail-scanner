@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify the configured scanner through Codex without starting a model turn."""
+from report_schema import verify_unknowns
 from pathlib import Path
 import subprocess,json,threading,queue,time,tomllib,argparse,os
 if not __debug__:
@@ -88,55 +89,11 @@ def verify_policy(report):
     contracts=policy_input.get('contracts', [])
     assert report['policy']['contractCount']==len(contracts)
     assert report['gateDecision']==('BLOCK' if any(a['disposition']=='VIOLATED' for a in report['assessments']) else 'REVIEW')
-def verify_unknowns(report, state, sarif_properties, markdown, context):
-    categories = {'MISSING_MAPPING', 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED'}
-    unknown = [item for item in report['assessments'] if item['disposition'] == 'UNKNOWN']
-    counts = dict.fromkeys(sorted(categories), 0)
-    for item in unknown:
-        tag = (context, item['ruleId'])
-        assert item.get('unknownCategory') in categories, (tag, 'missing UNKNOWN category', item)
-        counts[item['unknownCategory']] += 1
-        reasons = item.get('unknownReasons')
-        assert isinstance(reasons, list) and reasons, (tag, 'missing UNKNOWN reasons')
-        for reason in reasons:
-            assert set(reason) == {'category', 'code', 'explanation'}, (tag, reason)
-            assert reason['category'] in categories, (tag, reason)
-            assert isinstance(reason['code'], str) and reason['code'], (tag, reason)
-            assert isinstance(reason['explanation'], str) and reason['explanation'], (tag, reason)
-        assert reasons[0]['category'] == item['unknownCategory'], (tag, 'primary reason mismatch')
-        assert len(reasons) == len({json.dumps(r, sort_keys=True) for r in reasons}), (tag, 'duplicate reasons')
-    assert report.get('unknownSummary') == counts, (context, 'report UNKNOWN counts', report.get('unknownSummary'), counts)
-    assert state.get('unknownSummary') == counts, (context, 'status UNKNOWN counts', state)
-    assert state['unknowns'] == sum(counts.values()), (context, 'status UNKNOWN total', state)
-    assert sarif_properties.get('unknownSummary') == counts, (context, 'SARIF UNKNOWN counts')
-    assert sarif_properties.get('unknownAssessments') == len(unknown), (context, 'SARIF legacy UNKNOWN total')
-    expected = []
-    fields = ['ruleId', 'domain', 'disposition', 'severity', 'title', 'explanation',
-              'recommendation', 'limitations', 'profile', 'mappedPathOutcomes', 'unknownCategory']
-    for item in unknown:
-        detail = {key: item[key] for key in fields if key in item}
-        detail['unknownReasons'] = item['unknownReasons']
-        detail['evidence'] = [{key: evidence[key] for key in ['path', 'line', 'detail', 'role', 'nodeId']
-                               if key in evidence} for evidence in item['evidence']]
-        expected.append(detail)
-    assert sarif_properties.get('unknownAssessmentsDetails') == expected, (context, 'SARIF UNKNOWN details differ')
-    assert all(d.get('category') in categories for d in report['diagnostics']), (context, 'unclassified diagnostics')
-    assert 'UNKNOWN 原因分类' in markdown and all(label in markdown for label in ['缺少映射', '证据不足', '暂不支持']), (context, 'Markdown UNKNOWN breakdown missing')
-    coverage = report.get('mappingCoverage')
-    assert isinstance(coverage, dict), (context, 'mapping coverage missing')
-    assert state.get('mappingCoverage') == coverage, (context, 'status mapping coverage differs')
-    assert sarif_properties.get('mappingCoverage') == coverage, (context, 'SARIF mapping coverage differs')
-    if report['policy']['profile'] != 'generic':
-        for key in ['contractDefinitions', 'matchedDefinitions', 'matchedCallSites', 'matchedBoundarySites',
-                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions', 'incompleteSourceFiles']:
-            assert type(coverage.get(key)) is int and coverage[key] >= 0, (context, 'invalid mapping count', key, coverage)
-        assert coverage['matchedDefinitions'] <= coverage['contractDefinitions'], (context, 'mapping definition counts', coverage)
-        assert type(coverage.get('sourceDigestMatched')) is bool, (context, 'missing source binding result', coverage)
 
 
 transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.5.1'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.6.0'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -149,7 +106,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==len({r['id'] for r in rules})==33
-    assert server['serverInfo']['version']=='0.5.1'
+    assert server['serverInfo']['version']=='0.6.0'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -166,9 +123,9 @@ try:
             assert not r['contentOmitted'],(name,fmt)
             assert Path(r['artifacts'][fmt]).read_text()==r['content']
         report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
-        assert report['schemaVersion']=='1.4'
-        assert report['ruleSetVersion']=='java-python-guardrail-v6'
-        assert report['runtime']['scannerVersion']=='0.5.1'
+        assert report['schemaVersion']=='1.5'
+        assert report['ruleSetVersion']=='java-python-guardrail-v7'
+        assert report['runtime']['scannerVersion']=='0.6.0'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         verify_policy(report)
         assert s['policy']==report['policy']

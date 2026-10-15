@@ -1,12 +1,14 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.5.1 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.6.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
 银行模式通过启动参数 `--profile bank-common|bank-customer|bank-internal|bank-all` 选择，分别覆盖共性、客户服务/理财销售辅助、行内知识库/办公研发助手。使用外部操作员合同映射 API 后，追踪数据出站、可信身份、Guard 阻断、事实/适当性及文档/工具权限；缺少映射保留 `UNKNOWN`。配置、样例与限制见 [银行规则包](docs/banking-rules.md)，验收见 [0.4.0 银行验证](docs/banking-verification.md)。默认 `generic` 保留原有 26 条规则选择。0.5.0 支持 [真实 API 映射与 UNKNOWN 三类原因](docs/bank-semantic-mappings.md)，对应验收见 [0.5.0 记录](docs/semantic-mappings-verification.md)。
 
 本项目是 MVP。报告中的 `OBSERVED` 只表示观察到控制或构造，不能解释为安全通过。未发现问题也不能证明防注入效果、鉴权正确性或生产防护有效性。
 
 0.5.1 修复 Python 局部诊断污染与 Java 初始化路径遗漏，补齐 MCP 错误恢复和取消发布一致性，并在单次扫描内复用语法解析。规则集版本为 `java-python-guardrail-v6`，报告结构保持 `1.4`，新增 `mappingCoverage.incompleteSourceFiles` 表示银行适配中被丢弃或未遍历完的源文件数量。发布验收见 [0.5.1 记录](docs/analysis-hardening-verification.md)。
+
+0.6.0 增加 Java 条件分支、Python 流式元素来源和带参数条件的输出边界，按位置保留 UNKNOWN 原因及复核任务。身份信任、文档范围和 Guard 失败语义分别说明所需证据，技术能力缺口与必须人工确认的事项分开处理。规则集为 `java-python-guardrail-v7`，报告结构为 `1.5`；详见 [合同与报告说明](docs/bank-semantic-mappings.md)、[本轮验收记录](docs/unknown-followup-verification.md) 和 [整体技术实现方案](docs/technical-architecture.md)。
 
 ## 构建与演示
 
@@ -92,14 +94,14 @@ python3 scripts/verify-release.py \
 
 七个控制域为 L1 提示注入、L2 授权与隔离、L3 数据泄露、L4 资源限制、L5 内容审核、L6 审计追踪、L7 输出与执行安全。编号不代表安全等级。完整规则及语法边界见 [规则支持说明](docs/rules.md)。
 
-同一条规则可以输出不同状态的多条评估记录，例如一个调用路径为 `VIOLATED`，另一个为 `UNKNOWN`；发现违反不会隐藏其他路径的未知状态。覆盖表及 CLI 摘要统计的是评估记录，不是独立漏洞总数或代码位置数。每条评估最多导出 16 个位置，超过上限会产生 `RESULT_LIMIT` 或 `PYTHON_RESULT_LIMIT`，并将完整性标为不足。
+同一条规则可以输出不同状态的多条评估记录，例如一个调用路径为 `VIOLATED`，另一个为 `UNKNOWN`；发现违反不会隐藏其他路径的未知状态。覆盖表及 CLI 摘要统计的是评估记录，不是独立漏洞总数或代码位置数。评估的主证据列表最多导出 16 个位置，通用规则超限会产生 `RESULT_LIMIT` 或 `PYTHON_RESULT_LIMIT`，并将完整性标为不足。银行规则另有最多 128 项的逐位置评估与独立 Guard 控制复核列表，截断会显式标记，详见合同与报告说明。
 
 配置声明或函数名本身不能证明围栏有效。同步调用的控制也不能自动证明流式调用受保护。扫描器无法确定外部网关限额、存储 ACL、自定义安全服务或动态 Bean/AOP 的作用时，应当保留 `UNKNOWN`，由人工补充证据。
 
 ## 执行边界与数据处理
 
 - 扫描只读解析源码与配置，不运行目标的 Maven、Gradle、应用、注解处理器或项目脚本，不下载目标依赖。Maven XML 禁用 DTD 和外部实体，不执行 XML 中的构建或插件声明。
-- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.5.1 未实现。
+- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.6.0 未实现。
 - Java/Python 均使用固定版本的 ANTLR 语法解析，输入按 UTF-8 解码；解析失败或超预算的文件不使用部分语法结果。默认排除 `.git`、构建/依赖/工具目录、Python 虚拟环境与缓存，以及 Java/Python 测试目录；任意目录名只要具有 `pyvenv.cfg` 标记也按虚拟环境排除，`site-packages` 按依赖排除。排除项记录在 `EXCLUDED_SCOPE` 中。配置只选择 `pom.xml`、`build.gradle[.kts]`、`gradle.properties` 与 `application*.properties/yml/yaml`，其他 XML/YAML 不纳入当前配置规则。
 - 默认不跟随符号链接，并拒绝扫描范围逃逸和输入/输出目录重叠。单次最多清点 200,000 个目录条目、选择 10,000 个源码/配置文件，单文件 2 MiB、读取总量 32 MiB；预算耗尽或解析失败会留下诊断，不会计为通过。
 - 兼容实现使用不跟随链接的文件打开、路径、文件身份和修改信息校验，但不提供锚定目录读取或原子快照。每次记录 `FILESYSTEM_RACE_LIMITATION`，扫描期间源码树须保持稳定。
