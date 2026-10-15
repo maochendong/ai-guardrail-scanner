@@ -5,7 +5,7 @@ import static org.junit.Assert.*;
 import java.util.*;
 import org.junit.Test;
 
-public class BankUnknownDetailTest {
+public class BusinessUnknownDetailTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
@@ -31,7 +31,7 @@ public class BankUnknownDetailTest {
         assurance);
   }
 
-  private BankAnalysis scan(String body, List<Map<String, Object>> extra) throws Exception {
+  private BusinessAnalysis scan(String body, List<Map<String, Object>> extra) throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>(extra);
     contracts.add(
         Findings.map(
@@ -48,11 +48,11 @@ public class BankUnknownDetailTest {
             "release",
             "args",
             Arrays.asList(0)));
-    BankPolicy policy =
-        BankPolicy.parse(
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-all", Json.COMPACT.toJson(Findings.map("version", 2, "contracts", contracts)));
-    return BankAnalysis.analyze(
-        BankJavaAnalysis.adapt(
+    return BusinessAnalysis.analyze(
+        BusinessJavaAnalysis.adapt(
             Arrays.asList(
                 new SourceFile(
                     "Sample.java",
@@ -66,7 +66,7 @@ public class BankUnknownDetailTest {
         NONE);
   }
 
-  private Map<String, Object> finding(BankAnalysis analysis, String rule) {
+  private Map<String, Object> finding(BusinessAnalysis analysis, String rule) {
     for (Map<String, Object> item : analysis.assessments)
       if (rule.equals(item.get("ruleId"))) return item;
     throw new AssertionError(rule);
@@ -87,7 +87,7 @@ public class BankUnknownDetailTest {
                 Arrays.asList(
                     check("quality", "open", "candidate"),
                     check("unverified", "unknown", "reviewed"))),
-            BankPolicy.GUARD);
+            BusinessPolicy.GUARD);
     assertEquals("UNKNOWN", result.get("disposition"));
     assertEquals(1, sites(result).size());
     String reasons = sites(result).get(0).get("unknownReasons").toString();
@@ -104,7 +104,7 @@ public class BankUnknownDetailTest {
                 "Output.send(Model.make());\n"
                     + "String x=Model.make();Control.quality(x);Output.send(x);",
                 Arrays.asList(check("quality", "unknown", "candidate"))),
-            BankPolicy.GUARD);
+            BusinessPolicy.GUARD);
     assertEquals("VIOLATED", result.get("disposition"));
     assertEquals(2, sites(result).size());
     Unknowns.complete(Arrays.asList(result), Collections.<Map<String, Object>>emptyList());
@@ -130,8 +130,8 @@ public class BankUnknownDetailTest {
             -1,
             "scope",
             "unknown");
-    BankAnalysis analysis = scan("Store.retrieve(subject);", Arrays.asList(retrieve));
-    for (String rule : Arrays.asList(BankPolicy.IAM, BankPolicy.ACL)) {
+    BusinessAnalysis analysis = scan("Store.retrieve(subject);", Arrays.asList(retrieve));
+    for (String rule : Arrays.asList(BusinessPolicy.IAM, BusinessPolicy.ACL)) {
       Map<String, Object> result = finding(analysis, rule);
       assertEquals("UNKNOWN", result.get("disposition"));
       String reasons = sites(result).get(0).get("unknownReasons").toString();
@@ -159,7 +159,7 @@ public class BankUnknownDetailTest {
             "scope",
             "restricted");
     Map<String, Object> result =
-        finding(scan("Store.read(subject,\"item\");", Arrays.asList(access)), BankPolicy.IAM);
+        finding(scan("Store.read(subject,\"item\");", Arrays.asList(access)), BusinessPolicy.IAM);
     assertEquals("UNKNOWN", result.get("disposition"));
     assertTrue(result.get("unknownReasons").toString().contains("IDENTITY_TRUST_UNVERIFIED"));
   }
@@ -167,9 +167,9 @@ public class BankUnknownDetailTest {
   @Test
   public void actuallyCalledFailureOpenGuardRemainsVisibleWithoutInventingOutputReachability()
       throws Exception {
-    BankAnalysis analysis =
+    BusinessAnalysis analysis =
         scan("Control.quality(subject);", Arrays.asList(check("quality", "open", "candidate")));
-    Map<String, Object> result = finding(analysis, BankPolicy.GUARD);
+    Map<String, Object> result = finding(analysis, BusinessPolicy.GUARD);
     assertEquals("UNKNOWN", result.get("disposition"));
     assertEquals(0, result.get("mappedPathOutcomes"));
     assertTrue(sites(result).isEmpty());
@@ -189,7 +189,7 @@ public class BankUnknownDetailTest {
     body.append("Output.send(Model.make());\n");
     Map<String, Object> result =
         finding(
-            scan(body.toString(), Collections.<Map<String, Object>>emptyList()), BankPolicy.GUARD);
+            scan(body.toString(), Collections.<Map<String, Object>>emptyList()), BusinessPolicy.GUARD);
     assertEquals("VIOLATED", result.get("disposition"));
     assertEquals(128, sites(result).size());
     assertEquals(Boolean.TRUE, result.get("siteAssessmentsTruncated"));

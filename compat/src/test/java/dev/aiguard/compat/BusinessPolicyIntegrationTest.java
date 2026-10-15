@@ -20,7 +20,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /** Operator policy boundaries are checked independently from individual flow-rule fixtures. */
-public class BankPolicyIntegrationTest {
+public class BusinessPolicyIntegrationTest {
   @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
   private static final Cancel NEVER =
@@ -78,7 +78,7 @@ public class BankPolicyIntegrationTest {
     return root;
   }
 
-  private Map<String, Object> scan(Path root, BankPolicy policy) throws Exception {
+  private Map<String, Object> scan(Path root, BusinessPolicy policy) throws Exception {
     return new Scanner().scan(root, "bank-integration", NEVER, policy);
   }
 
@@ -110,7 +110,7 @@ public class BankPolicyIntegrationTest {
 
   private static void rejected(String json) throws Exception {
     try {
-      BankPolicy.parse("bank-all", json);
+      BusinessPolicy.parse("bank-all", json);
       fail("Invalid operator policy accepted: " + json);
     } catch (IllegalArgumentException expected) {
     } catch (IOException expected) {
@@ -127,13 +127,13 @@ public class BankPolicyIntegrationTest {
 
   @Test
   public void profilesSelectOnlyTheirOwnBankingRules() throws Exception {
-    assertTrue(BankPolicy.generic().ruleIds().isEmpty());
-    assertEquals(COMMON, new HashSet<String>(BankPolicy.load("bank-common", null).ruleIds()));
-    assertEquals(CUSTOMER, new HashSet<String>(BankPolicy.load("bank-customer", null).ruleIds()));
-    assertEquals(INTERNAL, new HashSet<String>(BankPolicy.load("bank-internal", null).ruleIds()));
-    assertEquals(allBankIds(), new HashSet<String>(BankPolicy.load("bank-all", null).ruleIds()));
+    assertTrue(BusinessPolicy.generic().ruleIds().isEmpty());
+    assertEquals(COMMON, new HashSet<String>(BusinessPolicy.load("bank-common", null).ruleIds()));
+    assertEquals(CUSTOMER, new HashSet<String>(BusinessPolicy.load("bank-customer", null).ruleIds()));
+    assertEquals(INTERNAL, new HashSet<String>(BusinessPolicy.load("bank-internal", null).ruleIds()));
+    assertEquals(allBankIds(), new HashSet<String>(BusinessPolicy.load("bank-all", null).ruleIds()));
     try {
-      BankPolicy.load("bank-allow-all", null);
+      BusinessPolicy.load("bank-allow-all", null);
       fail("Unknown profile accepted");
     } catch (IllegalArgumentException expected) {
     } catch (IOException expected) {
@@ -190,8 +190,8 @@ public class BankPolicyIntegrationTest {
   public void argumentIndexesAndAcceptedBooleanCannotBeGuessed() throws Exception {
     String check =
         "{\"symbol\":\"port.check\",\"arity\":1,\"kind\":\"check\",\"control\":\"guard\",\"args\":[0],\"accept\":true}";
-    BankPolicy.parse("bank-all", contracts(check));
-    BankPolicy.parse("bank-all", contracts(check.replace("true", "false")));
+    BusinessPolicy.parse("bank-all", contracts(check));
+    BusinessPolicy.parse("bank-all", contracts(check.replace("true", "false")));
     for (String entry :
         Arrays.asList(
             check.replace(",\"accept\":true", ""),
@@ -216,7 +216,7 @@ public class BankPolicyIntegrationTest {
   public void noMappingNeverBecomesSecurityPassOrMissingControlViolation() throws Exception {
     Path root =
         source("unmapped", "import arbitrary\ndef run(value):\n    arbitrary.send(value)\n");
-    Map<String, Object> report = scan(root, BankPolicy.load("bank-all", null));
+    Map<String, Object> report = scan(root, BusinessPolicy.load("bank-all", null));
     assertEquals(allBankIds(), bankIds(report));
     for (String rule : allBankIds()) {
       assertTrue("Missing unknown for " + rule, has(report, rule, "UNKNOWN"));
@@ -235,7 +235,7 @@ public class BankPolicyIntegrationTest {
     String[] profiles = {"bank-common", "bank-customer", "bank-internal", "bank-all"};
     List<Set<String>> expected = Arrays.asList(COMMON, CUSTOMER, INTERNAL, allBankIds());
     for (int i = 0; i < profiles.length; i++) {
-      Map<String, Object> report = scan(root, BankPolicy.load(profiles[i], null));
+      Map<String, Object> report = scan(root, BusinessPolicy.load(profiles[i], null));
       assertEquals(generic.get("sourceDigest"), report.get("sourceDigest"));
       assertEquals(generic.get("project"), report.get("project"));
       assertEquals(expected.get(i), bankIds(report));
@@ -257,7 +257,7 @@ public class BankPolicyIntegrationTest {
     write(
         root.resolve("application.yml"),
         "scanner:\n  profile: generic\n  securityVerified: true\n");
-    Map<String, Object> report = scan(root, BankPolicy.load("bank-all", null));
+    Map<String, Object> report = scan(root, BusinessPolicy.load("bank-all", null));
     assertEquals(allBankIds(), bankIds(report));
     assertEquals("bank-all", object(report, "policy").get("profile"));
     assertEquals("REVIEW", report.get("gateDecision"));
@@ -270,7 +270,7 @@ public class BankPolicyIntegrationTest {
     Path inside = root.resolve("operator-contracts.json");
     write(inside, EMPTY);
     try {
-      scan(root, BankPolicy.load("bank-all", inside));
+      scan(root, BusinessPolicy.load("bank-all", inside));
       fail("Repository-owned policy accepted as operator authority");
     } catch (IllegalArgumentException expected) {
     } catch (IOException expected) {
@@ -279,7 +279,7 @@ public class BankPolicyIntegrationTest {
     write(outside, EMPTY);
     assertEquals(
         "bank-all",
-        object(scan(root, BankPolicy.load("bank-all", outside)), "policy").get("profile"));
+        object(scan(root, BusinessPolicy.load("bank-all", outside)), "policy").get("profile"));
   }
 
   @Test
@@ -288,7 +288,7 @@ public class BankPolicyIntegrationTest {
         source("policy-snapshot", "from port import read, send\ndef run():\n    send(read())\n");
     Path outside = temporary.newFile("snapshot.json").toPath().toRealPath();
     write(outside, contracts(SOURCE, SINK));
-    BankPolicy policy = BankPolicy.load("bank-common", outside);
+    BusinessPolicy policy = BusinessPolicy.load("bank-common", outside);
     Map<String, Object> first = scan(root, policy);
     write(outside, EMPTY);
     Map<String, Object> second = scan(root, policy);
@@ -300,7 +300,7 @@ public class BankPolicyIntegrationTest {
 
   @Test
   public void directSensitiveEgressBlocksAndTransformRemainsAnObservation() throws Exception {
-    BankPolicy policy = BankPolicy.parse("bank-all", contracts(SOURCE, SINK, TRANSFORM));
+    BusinessPolicy policy = BusinessPolicy.parse("bank-all", contracts(SOURCE, SINK, TRANSFORM));
     Path raw = source("raw-egress", "from port import read, send\ndef run():\n    send(read())\n");
     Map<String, Object> failed = scan(raw, policy);
     assertTrue(has(failed, "BANK-DATA-001", "VIOLATED"));
@@ -324,7 +324,7 @@ public class BankPolicyIntegrationTest {
             "format-source",
             "from port import read, send\nSECRET = 'DO_NOT_EXPORT_BANK_SOURCE_SECRET'\n"
                 + "def run():\n    send(read())\n");
-    Map<String, Object> report = scan(root, BankPolicy.parse("bank-all", contracts(SOURCE, SINK)));
+    Map<String, Object> report = scan(root, BusinessPolicy.parse("bank-all", contracts(SOURCE, SINK)));
     Map<String, String> documents = Reports.write(report, folder("format-reports"));
     JsonObject json = Json.parse(documents.get("json")).getAsJsonObject();
     JsonObject sarif =
@@ -355,7 +355,7 @@ public class BankPolicyIntegrationTest {
         new ScanService(
             Arrays.asList(root),
             folder("service-reports"),
-            BankPolicy.parse("bank-common", contracts(SOURCE, SINK)));
+            BusinessPolicy.parse("bank-common", contracts(SOURCE, SINK)));
     try {
       String id = String.valueOf(service.start(root).get("scanId"));
       Map<String, Object> state = waitFor(service, id);
@@ -400,7 +400,7 @@ public class BankPolicyIntegrationTest {
                       Findings.map("name", "guardrail_scan_start", "arguments", attempt))))
           .append('\n');
     ByteArrayOutputStream result = new ByteArrayOutputStream();
-    new McpHost(new ScanService(Arrays.asList(root), output, BankPolicy.load("bank-all", null)))
+    new McpHost(new ScanService(Arrays.asList(root), output, BusinessPolicy.load("bank-all", null)))
         .run(new ByteArrayInputStream(frames.toString().getBytes(StandardCharsets.UTF_8)), result);
     String[] lines = new String(result.toByteArray(), StandardCharsets.UTF_8).trim().split("\n");
     assertEquals(attempts.size() + 1, lines.length);
@@ -432,7 +432,7 @@ public class BankPolicyIntegrationTest {
     Files.createDirectories(root.resolve(".git/hooks"));
     write(root.resolve(".git/hooks/pre-commit"), "#!/bin/sh\ntouch '" + marker + "'\n");
     root.resolve(".git/hooks/pre-commit").toFile().setExecutable(true);
-    Map<String, Object> report = scan(root, BankPolicy.load("bank-all", null));
+    Map<String, Object> report = scan(root, BusinessPolicy.load("bank-all", null));
     assertFalse(Files.exists(marker));
     assertEquals(allBankIds(), bankIds(report));
     assertEquals("REVIEW", report.get("gateDecision"));
@@ -442,7 +442,7 @@ public class BankPolicyIntegrationTest {
   @Test
   public void unsupportedSyntaxRetainsReviewAndUnknownBankingRules() throws Exception {
     Path root = source("parse-gap", "def broken(:\n    pass\n");
-    Map<String, Object> report = scan(root, BankPolicy.load("bank-all", null));
+    Map<String, Object> report = scan(root, BusinessPolicy.load("bank-all", null));
     assertEquals("REVIEW", report.get("gateDecision"));
     for (String id : allBankIds()) assertTrue(has(report, id, "UNKNOWN"));
     uncertified(report);

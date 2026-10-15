@@ -5,29 +5,29 @@ import static org.junit.Assert.*;
 import java.util.Arrays;
 import org.junit.Test;
 
-/** Syntax evidence for bounded iteration; execution and proof semantics belong to BankAnalysis. */
-public class BankPythonIterationTest {
+/** Syntax evidence for bounded iteration; execution and proof semantics belong to BusinessAnalysis. */
+public class BusinessPythonIterationTest {
   private static final Cancel NEVER =
       new Cancel() {
         public void check() {}
       };
 
-  private BankFlow.Function function(String source, BankPolicy policy) {
-    BankFlow.Program program =
-        BankPythonAnalysis.adapt(
+  private BusinessFlow.Function function(String source, BusinessPolicy policy) {
+    BusinessFlow.Program program =
+        BusinessPythonAnalysis.adapt(
             Arrays.asList(new SourceFile("renamed/workflow.py", source)), NEVER, policy);
-    for (BankFlow.Function function : program.functions)
+    for (BusinessFlow.Function function : program.functions)
       if (function.symbol.endsWith(".forward")) return function;
     throw new AssertionError("Missing forward function");
   }
 
-  private BankFlow.Function function(String source) {
-    return function(source, BankPolicy.generic());
+  private BusinessFlow.Function function(String source) {
+    return function(source, BusinessPolicy.generic());
   }
 
   @Test
   public void simpleTargetKeepsIterableCallAndYieldValuePath() {
-    BankFlow.Stmt loop =
+    BusinessFlow.Stmt loop =
         function(
                 "from external.port import stream\n"
                     + "def forward(query):\n"
@@ -46,7 +46,7 @@ public class BankPythonIterationTest {
 
   @Test
   public void loopElseRemainsSeparateFromIterationBody() {
-    BankFlow.Stmt loop =
+    BusinessFlow.Stmt loop =
         function(
                 "def forward(stream):\n"
                     + "    for part in stream:\n"
@@ -65,7 +65,7 @@ public class BankPythonIterationTest {
   public void complexTargetsAndWhileLoopsStayUnknown() {
     for (String header :
         Arrays.asList("for first, second in stream:", "for result.part in stream:", "while active:")) {
-      BankFlow.Stmt loop =
+      BusinessFlow.Stmt loop =
           function("def forward(stream, result, active):\n    " + header + "\n        yield result\n")
               .body
               .get(0);
@@ -77,13 +77,13 @@ public class BankPythonIterationTest {
 
   @Test
   public void candidateReceiverIsNotPromotedByIteration() throws Exception {
-    BankPolicy policy =
-        BankPolicy.parse(
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-all",
             "{\"version\":2,\"receivers\":[{\"owner\":\"renamed.workflow.Flow\","
                 + "\"field\":\"generator\",\"type\":\"external.model.Client\","
                 + "\"assurance\":\"candidate\"}]}");
-    BankFlow.Stmt loop =
+    BusinessFlow.Stmt loop =
         function(
                 "class Flow:\n"
                     + "    def forward(self, query):\n"
@@ -99,7 +99,7 @@ public class BankPythonIterationTest {
 
   @Test
   public void loopBodyUnknownFlowIsNotSilentlyDiscarded() {
-    BankFlow.Stmt loop =
+    BusinessFlow.Stmt loop =
         function(
                 "def forward(stream, total):\n"
                     + "    for part in stream:\n"
@@ -114,7 +114,7 @@ public class BankPythonIterationTest {
 
   @Test
   public void iterationBindingDoesNotRestoreShadowedImportedSymbol() {
-    BankFlow.Stmt loop =
+    BusinessFlow.Stmt loop =
         function(
                 "from external.port import emit\n"
                     + "def forward(stream):\n"

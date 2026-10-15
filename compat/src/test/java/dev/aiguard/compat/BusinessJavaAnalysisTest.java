@@ -8,52 +8,52 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import org.junit.Test;
 
-public class BankJavaAnalysisTest {
+public class BusinessJavaAnalysisTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
       };
 
-  private BankFlow.Program program(String... sources) {
+  private BusinessFlow.Program program(String... sources) {
     List<SourceFile> files = new ArrayList<SourceFile>();
     for (int i = 0; i < sources.length; i++)
       files.add(new SourceFile("src/Case" + i + ".java", sources[i]));
-    return BankJavaAnalysis.adapt(files, NONE);
+    return BusinessJavaAnalysis.adapt(files, NONE);
   }
 
-  private BankFlow.Function function(BankFlow.Program program, String symbol) {
+  private BusinessFlow.Function function(BusinessFlow.Program program, String symbol) {
     assertTrue(program.diagnostics.toString(), program.diagnostics.isEmpty());
-    for (BankFlow.Function function : program.functions)
+    for (BusinessFlow.Function function : program.functions)
       if (function.symbol.equals(symbol)) return function;
     throw new AssertionError("Missing function " + symbol);
   }
 
-  private List<BankFlow.Expr> calls(BankFlow.Function function) {
-    List<BankFlow.Expr> calls = new ArrayList<BankFlow.Expr>();
+  private List<BusinessFlow.Expr> calls(BusinessFlow.Function function) {
+    List<BusinessFlow.Expr> calls = new ArrayList<BusinessFlow.Expr>();
     statements(function.body, calls);
     return calls;
   }
 
-  private void statements(List<BankFlow.Stmt> statements, List<BankFlow.Expr> calls) {
-    for (BankFlow.Stmt statement : statements) {
+  private void statements(List<BusinessFlow.Stmt> statements, List<BusinessFlow.Expr> calls) {
+    for (BusinessFlow.Stmt statement : statements) {
       expressions(statement.expr, calls);
       statements(statement.body, calls);
       statements(statement.otherwise, calls);
       statements(statement.finalizer, calls);
-      for (List<BankFlow.Stmt> handler : statement.handlers) statements(handler, calls);
+      for (List<BusinessFlow.Stmt> handler : statement.handlers) statements(handler, calls);
     }
   }
 
-  private void expressions(BankFlow.Expr expression, List<BankFlow.Expr> calls) {
+  private void expressions(BusinessFlow.Expr expression, List<BusinessFlow.Expr> calls) {
     if (expression == null) return;
     if (expression.kind.equals("CALL")) calls.add(expression);
     expressions(expression.receiver, calls);
-    for (BankFlow.Expr argument : expression.args) expressions(argument, calls);
+    for (BusinessFlow.Expr argument : expression.args) expressions(argument, calls);
   }
 
   @Test
   public void preservesLocalDataAndGuardControlFlow() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "package example; import remote.Data; import remote.Guard; import"
@@ -63,7 +63,7 @@ public class BankJavaAnalysisTest {
             "example.Use#run");
     assertEquals(1, f.params.size());
     assertEquals(4, f.body.size());
-    BankFlow.Stmt source = f.body.get(0), guard = f.body.get(1), branch = f.body.get(2);
+    BusinessFlow.Stmt source = f.body.get(0), guard = f.body.get(1), branch = f.body.get(2);
     assertEquals("ASSIGN", source.kind);
     assertEquals("remote.Data#load", source.expr.symbol);
     assertEquals(f.params.get(0), source.expr.args.get(0).name);
@@ -78,14 +78,14 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void retainsTrueFalseEqualityAndElseThrow() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "class Use {void run(boolean accepted){if(accepted==true){send();}"
                     + "else {throw new IllegalArgumentException();} if(accepted!=false)return;}"
                     + "private void send(){}}"),
             "Use#run");
-    BankFlow.Stmt first = f.body.get(0), second = f.body.get(1);
+    BusinessFlow.Stmt first = f.body.get(0), second = f.body.get(1);
     assertEquals("==", first.expr.operator);
     assertEquals(Boolean.TRUE, first.expr.args.get(1).literal);
     assertEquals("THROW", first.otherwise.get(0).kind);
@@ -95,13 +95,13 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void declaredReceiverTypeBindsInstanceCalls() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Gateway; class Use {void run(Gateway client,String text)"
                     + "{client.send(text);}}"),
             "Use#run");
-    BankFlow.Expr call = calls(f).get(0);
+    BusinessFlow.Expr call = calls(f).get(0);
     assertEquals("remote.Gateway#send", call.symbol);
     assertEquals(1, call.args.size());
     assertEquals(f.params.get(0), call.receiver.name);
@@ -110,7 +110,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void qualifiedStaticCallsAreNotCollapsedToSimpleNames() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program("class Use {void run(String x){remote.policy.Guard.accept(x);}}"), "Use#run");
     assertEquals("remote.policy.Guard#accept", calls(f).get(0).symbol);
@@ -119,7 +119,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void importedStaticQualifierHasNoRuntimeReceiver() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program("import remote.Guard;class Use {void run(String x){Guard.accept(x);}}"),
             "Use#run");
@@ -129,7 +129,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void sourceTypeShadowingCannotMatchExternalType() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Guard; class Guard {static boolean accept(String x){return true;}}"
@@ -140,7 +140,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void localValueShadowingCannotMatchImportedType() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Guard; class Use {void run(Object Guard,String x)"
@@ -151,7 +151,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void unresolvedDottedValueIsNotAQualifiedType() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program("class Use {void run(Object remote,String x){remote.policy.Guard.accept(x);}}"),
             "Use#run");
@@ -160,7 +160,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void exactStaticImportBindsExternalApi() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program("import static remote.Guard.accept;class Use {void run(String x){accept(x);}}"),
             "Use#run");
@@ -174,7 +174,7 @@ public class BankJavaAnalysisTest {
             "import static remote.Guard.accept;import static another.Guard.accept;",
             "import static remote.Guard.*;",
             "import static remote.Guard.accept;import static another.Guard.*;")) {
-      BankFlow.Function f =
+      BusinessFlow.Function f =
           function(program(imports + "class Use {void run(String x){accept(x);}}"), "Use#run");
       assertEquals("", calls(f).get(0).symbol);
     }
@@ -182,7 +182,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void localMethodShadowsStaticImport() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import static remote.Guard.accept;final class Use {void run(String x){accept(x);}"
@@ -193,7 +193,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void lexicalShadowingAndReassignmentUseDeclarationIds() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Data;import remote.Output;class Use {void run(){"
@@ -208,13 +208,13 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void callArityExcludesReceiverAndPreservesNestedReceiverCalls() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "final class Client {Client create(){return this;}void send(String x,int n){}"
                     + "void run(String x){create().send(x,2);}}"),
             "Client#run");
-    BankFlow.Expr outer = calls(f).get(0);
+    BusinessFlow.Expr outer = calls(f).get(0);
     assertEquals("Client#send", outer.symbol);
     assertEquals(2, outer.args.size());
     assertEquals("CALL", outer.receiver.kind);
@@ -225,13 +225,13 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void javaSevenNumericAndNullLiteralsRemainTyped() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Output;class Use {void"
                     + " run(){Output.send(0b1_010,0xff,2L,1.5,null);}}"),
             "Use#run");
-    List<BankFlow.Expr> args = calls(f).get(0).args;
+    List<BusinessFlow.Expr> args = calls(f).get(0).args;
     assertEquals(Long.valueOf(10), args.get(0).literal);
     assertEquals(Long.valueOf(255), args.get(1).literal);
     assertEquals(Long.valueOf(2), args.get(2).literal);
@@ -242,7 +242,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void duplicateTypesNeverEstablishDefiniteApiBinding() {
-    BankFlow.Program result =
+    BusinessFlow.Program result =
         program(
             "package remote;class Guard {static boolean accept(String x){return true;}}",
             "package remote;class Guard {static boolean accept(String x){return false;}}",
@@ -253,7 +253,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void preservesJavaSevenResourcesMultiCatchAndFinally() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Guard;import remote.Output; class Use {void run(String"
@@ -262,7 +262,7 @@ public class BankJavaAnalysisTest {
                     + "if(!Guard.accept(value))return;Output.send(value);}catch(java.io.IOException|IllegalArgumentException"
                     + " error){Output.send(value);}finally{Output.close();}}}"),
             "Use#run");
-    BankFlow.Stmt attempt = f.body.get(0);
+    BusinessFlow.Stmt attempt = f.body.get(0);
     assertEquals("TRY", attempt.kind);
     assertEquals("ASSIGN", attempt.body.get(0).kind);
     assertEquals("IF", attempt.body.get(1).kind);
@@ -273,7 +273,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void unsupportedControlFlowKeepsCallsButCannotProveBarrier() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Guard;import remote.Output;class Use {void run(String x){"
@@ -286,7 +286,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void lambdaBodyIsNotEagerlyExecuted() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program(
                 "import remote.Guard;class Use {void run(String x){"
@@ -299,7 +299,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void fieldStateCannotContaminateLocalFlow() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(
             program("class Use {String value;void run(String x){value=x;String local=value;}}"),
             "Use#run");
@@ -310,7 +310,7 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void missingMethodBodyIsExplicitlyUnknown() {
-    BankFlow.Function f =
+    BusinessFlow.Function f =
         function(program("interface Port {boolean check(String value);}"), "Port#check");
     assertEquals(1, f.params.size());
     assertEquals("UNKNOWN", f.body.get(0).kind);
@@ -318,14 +318,14 @@ public class BankJavaAnalysisTest {
 
   @Test
   public void parseFailureDoesNotLeakPartialFunctionEvidence() {
-    BankFlow.Program result = program("class Use {void broken(}");
+    BusinessFlow.Program result = program("class Use {void broken(}");
     assertTrue(result.functions.isEmpty());
     assertEquals("BANK_JAVA_PARSE_INCOMPLETE", result.diagnostics.get(0).get("code"));
   }
 
   @Test(expected = CancellationException.class)
   public void cancellationStopsAdaptation() {
-    BankJavaAnalysis.adapt(
+    BusinessJavaAnalysis.adapt(
         Arrays.asList(new SourceFile("Use.java", "class Use {}")),
         new Cancel() {
           public void check() {

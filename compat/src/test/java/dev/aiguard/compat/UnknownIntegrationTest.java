@@ -70,7 +70,7 @@ public class UnknownIntegrationTest {
   @Test
   public void bankingCoverageAndUnknownReasonsSurviveAllReportFormats() throws Exception {
     Map<String, Object> report =
-        new Scanner().scan(source("bank"), "bank", NEVER, BankPolicy.load("bank-all", null));
+        new Scanner().scan(source("bank"), "bank", NEVER, BusinessPolicy.load("bank-all", null));
     assertSummaryMatchesReport(report);
     Map<String, Object> coverage = object(report, "mappingCoverage");
     for (String key :
@@ -110,7 +110,7 @@ public class UnknownIntegrationTest {
     Path root = source("service");
     Path output = temporary.newFolder("service-output").toPath().toRealPath();
     ScanService service =
-        new ScanService(Arrays.asList(root), output, BankPolicy.load("bank-all", null));
+        new ScanService(Arrays.asList(root), output, BusinessPolicy.load("bank-all", null));
     try {
       Map<String, Object> state = service.start(root);
       String id = String.valueOf(state.get("scanId"));

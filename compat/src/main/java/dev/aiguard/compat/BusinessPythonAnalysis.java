@@ -11,20 +11,21 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /** Conservative Python syntax adapter; it never imports or executes the inspected application. */
-public final class BankPythonAnalysis {
-  private BankPythonAnalysis() {}
+public final class BusinessPythonAnalysis {
+  private BusinessPythonAnalysis() {}
 
-  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
-    return adapt(files, cancel, BankPolicy.generic());
+  public static BusinessFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
+    return adapt(files, cancel, BusinessPolicy.generic());
   }
 
-  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel, BankPolicy policy) {
+  public static BusinessFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BusinessPolicy policy) {
     return adapt(files, cancel, policy, new PythonSyntax.Cache());
   }
 
-  public static BankFlow.Program adapt(
-      List<SourceFile> files, Cancel cancel, BankPolicy policy, PythonSyntax.Cache syntax) {
-    BankFlow.Program program = new BankFlow.Program();
+  public static BusinessFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BusinessPolicy policy, PythonSyntax.Cache syntax) {
+    BusinessFlow.Program program = new BusinessFlow.Program();
     for (SourceFile file : files) {
       cancel.check();
       new Adapter(file, cancel, program, policy).parse(syntax.parse(file, cancel));
@@ -43,20 +44,28 @@ public final class BankPythonAnalysis {
     final Map<String, Integer> assignments = new HashMap<String, Integer>();
     final Set<String> blocked = new HashSet<String>();
     final Set<String> mutated = new HashSet<String>();
+    final Set<String> rebound = new HashSet<String>();
+    final Map<String, LocalFunction> localFunctions = new LinkedHashMap<String, LocalFunction>();
     String owner = "", receiverName = "";
     boolean opaque;
+  }
+
+  private static final class LocalFunction {
+    String id;
+    int at;
+    final List<String> parameters = new ArrayList<String>();
   }
 
   private static final class Adapter {
     final SourceFile file;
     final Cancel cancel;
-    final BankFlow.Program program;
-    final BankPolicy policy;
-    final List<BankFlow.Function> functions = new ArrayList<BankFlow.Function>();
+    final BusinessFlow.Program program;
+    final BusinessPolicy policy;
+    final List<BusinessFlow.Function> functions = new ArrayList<BusinessFlow.Function>();
     int visits;
     boolean unsupported;
 
-    Adapter(SourceFile file, Cancel cancel, BankFlow.Program program, BankPolicy policy) {
+    Adapter(SourceFile file, Cancel cancel, BusinessFlow.Program program, BusinessPolicy policy) {
       this.file = file;
       this.cancel = cancel;
       this.program = program;
@@ -76,7 +85,9 @@ public final class BankPythonAnalysis {
       try {
         ParserRuleContext tree = syntax.tree;
         Scope module = scope(tree, null, null);
-        BankFlow.Function top = function(moduleName(file.path) + ".<module>", tree);
+        indexLocalFunctions(tree, module);
+        BusinessFlow.Function top = function(moduleName(file.path) + ".<module>", tree);
+        top.executionUncertain = module.opaque;
         statements(tree, module, top.body, 0);
         functions.add(top);
         definitions(tree, module, moduleName(file.path), 0, false, "");
@@ -96,7 +107,8 @@ public final class BankPythonAnalysis {
       program.incompletePaths.add(file.path);
       if ("SYNTAX".equals(reason))
         diagnostic(
-            "BANK_PYTHON_PARSE_FAILED", "Python syntax failed; bank flow for this file was discarded.");
+            "BANK_PYTHON_PARSE_FAILED",
+            "Python syntax failed; bank flow for this file was discarded.");
       else if ("LIMIT".equals(reason))
         diagnostic(
             "BANK_PYTHON_ANALYSIS_LIMIT",
@@ -115,11 +127,12 @@ public final class BankPythonAnalysis {
       program.diagnostics.add(diagnostic);
     }
 
-    BankFlow.Function function(String symbol, ParserRuleContext node) {
-      BankFlow.Function f = new BankFlow.Function();
+    BusinessFlow.Function function(String symbol, ParserRuleContext node) {
+      BusinessFlow.Function f = new BusinessFlow.Function();
       f.path = file.path;
       f.line = node.getStart().getLine();
       f.symbol = symbol;
+      f.id = file.path + ":" + kind(node) + ":" + node.getStart().getTokenIndex();
       return f;
     }
 
@@ -130,12 +143,98 @@ public final class BankPythonAnalysis {
         for (String name : outer.blocked) scope.imports.remove(name);
         for (String name : outer.mutated) scope.imports.remove(name);
         scope.opaque = outer.opaque;
+        scope.localFunctions.putAll(outer.localFunctions);
       }
       bindings(body, scope, false, 0);
       if (params != null)
         for (ParserRuleContext p : descendants(params, "Tfpdef", 0))
           scope.blocked.add(text(direct(p, "Name")));
+      for (String name : scope.blocked) scope.localFunctions.remove(name);
+      for (String name : scope.mutated) scope.localFunctions.remove(name);
+      for (String name : scope.rebound) scope.localFunctions.remove(name);
+      if (scope.opaque) scope.localFunctions.clear();
       return scope;
+    }
+
+    /** Resolve only stable, same-file module declarations; never infer targets from API symbols. */
+    void indexLocalFunctions(ParserRuleContext tree, Scope module) {
+      if (module.opaque || dynamicBindings(tree, 0)) return;
+      Map<String, LocalFunction> found = new LinkedHashMap<String, LocalFunction>();
+      Set<String> rejected = new HashSet<String>();
+      localDefinitions(tree, true, found, rejected, 0);
+      for (Map.Entry<String, LocalFunction> entry : found.entrySet())
+        if (!rejected.contains(entry.getKey())
+            && !module.rebound.contains(entry.getKey())
+            && !module.mutated.contains(entry.getKey()))
+          module.localFunctions.put(entry.getKey(), entry.getValue());
+    }
+
+    boolean dynamicBindings(ParserRuleContext node, int depth) {
+      check(depth);
+      String k = kind(node);
+      if ("Global_stmt".equals(k) || "Nonlocal_stmt".equals(k)) return true;
+      if ("Import_from".equals(k) && has(node, "*")) return true;
+      if ("Atom_expr".equals(k)) {
+        String atom = text(direct(node, "Atom"));
+        if ("exec".equals(atom)
+            || "eval".equals(atom)
+            || "globals".equals(atom)
+            || "locals".equals(atom)) return true;
+      }
+      for (ParserRuleContext child : children(node))
+        if (dynamicBindings(child, depth + 1)) return true;
+      return false;
+    }
+
+    void localDefinitions(
+        ParserRuleContext node,
+        boolean unconditional,
+        Map<String, LocalFunction> found,
+        Set<String> rejected,
+        int depth) {
+      check(depth);
+      String k = kind(node);
+      if ("Classdef".equals(k)) {
+        rejected.add(text(direct(node, "Name")));
+        return;
+      }
+      if ("Funcdef".equals(k)) {
+        String name = text(direct(node, "Name"));
+        ParserRuleContext params = direct(node, "Parameters");
+        ParserRuleContext typed = direct(params, "Typedargslist");
+        LocalFunction target = new LocalFunction();
+        target.id = file.path + ":" + kind(node) + ":" + node.getStart().getTokenIndex();
+        target.at = node.getStart().getTokenIndex();
+        boolean eligible =
+            unconditional
+                && !has(node, "->")
+                && (typed == null || !has(typed, "=") && !has(typed, "*") && !has(typed, "**"))
+                && !containsYield(direct(node, "Block"), 0);
+        Set<String> names = new HashSet<String>();
+        for (ParserRuleContext param : descendants(params, "Tfpdef", 0)) {
+          String parameter = text(direct(param, "Name"));
+          eligible &= identifier(parameter) && names.add(parameter) && !has(param, ":");
+          target.parameters.add(parameter);
+        }
+        if (!eligible || found.containsKey(name)) rejected.add(name);
+        found.put(name, target);
+        return;
+      }
+      boolean declarationWrapper =
+          "File_input".equals(k) || "Stmt".equals(k) || "Compound_stmt".equals(k);
+      for (ParserRuleContext child : children(node))
+        localDefinitions(child, unconditional && declarationWrapper, found, rejected, depth + 1);
+    }
+
+    boolean containsYield(ParserRuleContext node, int depth) {
+      if (node == null) return false;
+      check(depth);
+      String k = kind(node);
+      if ("Yield_expr".equals(k) || "Yield_stmt".equals(k)) return true;
+      if ("Funcdef".equals(k) || "Classdef".equals(k)) return false;
+      for (ParserRuleContext child : children(node))
+        if (containsYield(child, depth + 1)) return true;
+      return false;
     }
 
     void bindings(ParserRuleContext n, Scope s, boolean conditional, int depth) {
@@ -191,7 +290,10 @@ public final class BankPythonAnalysis {
       if ("With_item".equals(k) && has(n, "as")) bindTarget(direct(n, "Expr"), s, true, depth + 1);
       if ("Except_clause".equals(k)) {
         String name = text(direct(n, "Name"));
-        if (name.length() > 0) s.blocked.add(name);
+        if (name.length() > 0) {
+          s.blocked.add(name);
+          s.rebound.add(name);
+        }
       }
       if ("Global_stmt".equals(k) || "Nonlocal_stmt".equals(k)) s.opaque = true;
       if ("Del_stmt".equals(k)) bindTarget(direct(n, "Exprlist"), s, true, depth + 1);
@@ -219,6 +321,7 @@ public final class BankPythonAnalysis {
     }
 
     void bindImport(Scope scope, String local, String symbol, boolean conditional, int at) {
+      scope.rebound.add(local);
       if (conditional || scope.imports.containsKey(local)) scope.blocked.add(local);
       else {
         scope.imports.put(local, symbol);
@@ -234,13 +337,16 @@ public final class BankPythonAnalysis {
         Integer count = s.assignments.get(target);
         s.assignments.put(target, Integer.valueOf(count == null ? 1 : count.intValue() + 1));
         s.blocked.add(target);
+        s.rebound.add(target);
         if (conditional) s.mutated.add(target);
       } else {
         for (ParserRuleContext atom : descendants(n, "Atom_expr", 0)) {
           String base = text(direct(atom, "Atom"));
           if (identifier(base)) {
-            if (directs(atom, "Trailer").isEmpty()) s.blocked.add(base);
-            else s.mutated.add(base);
+            if (directs(atom, "Trailer").isEmpty()) {
+              s.blocked.add(base);
+              s.rebound.add(base);
+            } else s.mutated.add(base);
           }
         }
       }
@@ -258,7 +364,7 @@ public final class BankPythonAnalysis {
       if ("Funcdef".equals(k)) {
         ParserRuleContext block = direct(n, "Block"), params = direct(n, "Parameters");
         Scope scope = scope(block, outer, params);
-        BankFlow.Function f = function(prefix + "." + text(direct(n, "Name")), n);
+        BusinessFlow.Function f = function(prefix + "." + text(direct(n, "Name")), n);
         List<ParserRuleContext> parameters = descendants(params, "Tfpdef", 0);
         scope.owner = owner;
         for (int i = 0; i < parameters.size(); i++) {
@@ -272,6 +378,7 @@ public final class BankPythonAnalysis {
         }
         ParserRuleContext typed = direct(params, "Typedargslist");
         if (typed != null && (has(typed, "*") || has(typed, "**"))) decorated = true;
+        f.executionUncertain = decorated || scope.opaque;
         if (decorated || scope.opaque) f.body.add(unknown(n, scope, false, depth + 1));
         statements(block, scope, f.body, depth + 1);
         functions.add(f);
@@ -289,11 +396,14 @@ public final class BankPythonAnalysis {
             outer,
             prefix,
             depth + 1,
-            decorated || "Decorated".equals(k) || "Async_funcdef".equals(k),
+            decorated
+                || "Decorated".equals(k)
+                || "Async_funcdef".equals(k)
+                || "Async_stmt".equals(k),
             owner);
     }
 
-    void statements(ParserRuleContext n, Scope scope, List<BankFlow.Stmt> out, int depth) {
+    void statements(ParserRuleContext n, Scope scope, List<BusinessFlow.Stmt> out, int depth) {
       if (n == null) return;
       check(depth);
       String k = kind(n);
@@ -325,7 +435,7 @@ public final class BankPythonAnalysis {
           List<ParserRuleContext> tests = directs(ann, "Test");
           assignment(n, text(parts.get(0)), tests.get(tests.size() - 1), scope, out, depth + 1);
         } else if (parts.size() == 1 && ann == null && direct(n, "Augassign") == null) {
-          BankFlow.Stmt s = statement("EXPR", n);
+          BusinessFlow.Stmt s = statement("EXPR", n);
           s.expr = expression(parts.get(0), scope, depth + 1);
           out.add(s);
         } else out.add(unknown(n, scope, true, depth + 1));
@@ -333,9 +443,9 @@ public final class BankPythonAnalysis {
       }
       if ("If_stmt".equals(k)) {
         List<ParserRuleContext> tests = directs(n, "Test"), blocks = directs(n, "Block");
-        BankFlow.Stmt current = null;
+        BusinessFlow.Stmt current = null;
         for (int i = 0; i < tests.size(); i++) {
-          BankFlow.Stmt branch = statement("IF", tests.get(i));
+          BusinessFlow.Stmt branch = statement("IF", tests.get(i));
           branch.expr = expression(tests.get(i), scope, depth + 1);
           statements(blocks.get(i), scope, branch.body, depth + 1);
           if (current == null) out.add(branch);
@@ -347,7 +457,7 @@ public final class BankPythonAnalysis {
         return;
       }
       if ("Try_stmt".equals(k)) {
-        BankFlow.Stmt s = statement("TRY", n);
+        BusinessFlow.Stmt s = statement("TRY", n);
         String branch = "try";
         for (int i = 0; i < n.getChildCount(); i++) {
           ParseTree child = n.getChild(i);
@@ -357,12 +467,12 @@ public final class BankPythonAnalysis {
             branch = child.getText();
           else if (child instanceof ParserRuleContext
               && "Block".equals(kind((ParserRuleContext) child))) {
-            List<BankFlow.Stmt> destination;
+            List<BusinessFlow.Stmt> destination;
             if ("try".equals(branch)) destination = s.body;
             else if ("else".equals(branch)) destination = s.otherwise;
             else if ("finally".equals(branch)) destination = s.finalizer;
             else {
-              destination = new ArrayList<BankFlow.Stmt>();
+              destination = new ArrayList<BusinessFlow.Stmt>();
               s.handlers.add(destination);
             }
             statements((ParserRuleContext) child, scope, destination, depth + 1);
@@ -372,7 +482,7 @@ public final class BankPythonAnalysis {
         return;
       }
       if ("Return_stmt".equals(k) || "Raise_stmt".equals(k)) {
-        BankFlow.Stmt s = statement("Return_stmt".equals(k) ? "RETURN" : "THROW", n);
+        BusinessFlow.Stmt s = statement("Return_stmt".equals(k) ? "RETURN" : "THROW", n);
         List<ParserRuleContext> children = children(n);
         if (!children.isEmpty()) s.expr = expression(children.get(0), scope, depth + 1);
         out.add(s);
@@ -385,7 +495,7 @@ public final class BankPythonAnalysis {
           out.add(unknown(n, scope, true, depth + 1));
           return;
         }
-        BankFlow.Stmt s = statement("YIELD", n);
+        BusinessFlow.Stmt s = statement("YIELD", n);
         if (arg != null) s.expr = expression(arg, scope, depth + 1);
         out.add(s);
         return;
@@ -393,10 +503,8 @@ public final class BankPythonAnalysis {
       if ("For_stmt".equals(k) || "While_stmt".equals(k)) {
         String target = "For_stmt".equals(k) ? text(direct(n, "Exprlist")) : "";
         // Only a single name has a defined element binding. Unpacking and mutation stay opaque.
-        BankFlow.Stmt s =
-            identifier(target)
-                ? statement("ITERATE", n)
-                : unknown(n, scope, false, depth + 1);
+        BusinessFlow.Stmt s =
+            identifier(target) ? statement("ITERATE", n) : unknown(n, scope, false, depth + 1);
         if ("ITERATE".equals(s.kind)) s.target = target;
         ParserRuleContext condition = direct(n, "For_stmt".equals(k) ? "Testlist" : "Test");
         if (condition != null) s.expr = expression(condition, scope, depth + 1);
@@ -432,9 +540,9 @@ public final class BankPythonAnalysis {
         String name,
         ParserRuleContext value,
         Scope scope,
-        List<BankFlow.Stmt> out,
+        List<BusinessFlow.Stmt> out,
         int depth) {
-      BankFlow.Stmt s = statement("ASSIGN", node);
+      BusinessFlow.Stmt s = statement("ASSIGN", node);
       s.target = name;
       s.expr = expression(value, scope, depth + 1);
       out.add(s);
@@ -445,16 +553,17 @@ public final class BankPythonAnalysis {
           && s.expr.receiver == null) scope.instances.put(name, s.expr.symbol);
     }
 
-    BankFlow.Stmt statement(String kind, ParserRuleContext n) {
-      BankFlow.Stmt s = new BankFlow.Stmt(kind);
+    BusinessFlow.Stmt statement(String kind, ParserRuleContext n) {
+      BusinessFlow.Stmt s = new BusinessFlow.Stmt(kind);
       s.path = file.path;
       s.line = n.getStart().getLine();
       return s;
     }
 
-    BankFlow.Stmt unknown(ParserRuleContext n, Scope scope, boolean calls, int depth) {
+    BusinessFlow.Stmt unknown(ParserRuleContext n, Scope scope, boolean calls, int depth) {
       unsupported = true;
-      BankFlow.Stmt s = statement("UNKNOWN", n);
+      BusinessFlow.Stmt s = statement("UNKNOWN", n);
+      if ("Expr_stmt".equals(kind(n)) && linearExpression(n, 0)) s.orderUncertain = false;
       if (calls) {
         s.expr = expr("UNKNOWN", n);
         nestedCalls(n, scope, s.expr.args, depth + 1);
@@ -462,7 +571,26 @@ public final class BankPythonAnalysis {
       return s;
     }
 
-    void nestedCalls(ParserRuleContext n, Scope scope, List<BankFlow.Expr> out, int depth) {
+    /** A synchronous calculation may obscure a value without obscuring later statement order. */
+    boolean linearExpression(ParserRuleContext node, int depth) {
+      check(depth);
+      String k = kind(node);
+      if ("Yield_expr".equals(k)
+          || "Yield_stmt".equals(k)
+          || "Lambdef".equals(k)
+          || "Lambdef_nocond".equals(k)
+          || "Comp_for".equals(k)
+          || "Comp_if".equals(k)
+          || "Atom_expr".equals(k) && has(node, "await")
+          || "Test".equals(k) && children(node).size() > 1
+          || ("And_test".equals(k) || "Or_test".equals(k)) && children(node).size() > 1)
+        return false;
+      for (ParserRuleContext child : children(node))
+        if (!linearExpression(child, depth + 1)) return false;
+      return true;
+    }
+
+    void nestedCalls(ParserRuleContext n, Scope scope, List<BusinessFlow.Expr> out, int depth) {
       check(depth);
       if ("Funcdef".equals(kind(n)) || "Classdef".equals(kind(n))) return;
       if ("Atom_expr".equals(kind(n))) {
@@ -472,12 +600,12 @@ public final class BankPythonAnalysis {
       for (ParserRuleContext child : children(n)) nestedCalls(child, scope, out, depth + 1);
     }
 
-    BankFlow.Expr expression(ParserRuleContext n, Scope scope, int depth) {
+    BusinessFlow.Expr expression(ParserRuleContext n, Scope scope, int depth) {
       check(depth);
       String k = kind(n);
       if ("Atom_expr".equals(k)) return atomExpression(n, scope, depth + 1);
       if ("Name".equals(k)) {
-        BankFlow.Expr e = expr("NAME", n);
+        BusinessFlow.Expr e = expr("NAME", n);
         e.name = text(n);
         return e;
       }
@@ -488,7 +616,7 @@ public final class BankPythonAnalysis {
         if (direct(n, "Testlist_comp") != null && !has(n, "["))
           return expression(direct(n, "Testlist_comp"), scope, depth + 1);
         if (children(n).isEmpty()) {
-          BankFlow.Expr e = expr("LITERAL", n);
+          BusinessFlow.Expr e = expr("LITERAL", n);
           String value = text(n);
           if ("True".equals(value)) e.literal = Boolean.TRUE;
           else if ("False".equals(value)) e.literal = Boolean.FALSE;
@@ -508,21 +636,21 @@ public final class BankPythonAnalysis {
       }
       List<ParserRuleContext> cs = children(n);
       if ("Not_test".equals(k) && has(n, "not")) {
-        BankFlow.Expr e = expr("UNARY", n);
+        BusinessFlow.Expr e = expr("UNARY", n);
         e.operator = "not";
         e.args.add(expression(cs.get(0), scope, depth + 1));
         return e;
       }
       if ("Or_test".equals(k) || "And_test".equals(k)) {
         if (cs.size() == 1) return expression(cs.get(0), scope, depth + 1);
-        BankFlow.Expr e = expr("BINARY", n);
+        BusinessFlow.Expr e = expr("BINARY", n);
         e.operator = "Or_test".equals(k) ? "or" : "and";
         for (ParserRuleContext c : cs) e.args.add(expression(c, scope, depth + 1));
         return e;
       }
       if ("Comparison".equals(k) && cs.size() > 1) {
         if (cs.size() != 3) return unsupportedExpr(n, scope, depth + 1);
-        BankFlow.Expr e = expr("BINARY", n);
+        BusinessFlow.Expr e = expr("BINARY", n);
         e.operator = text(cs.get(1));
         e.args.add(expression(cs.get(0), scope, depth + 1));
         e.args.add(expression(cs.get(2), scope, depth + 1));
@@ -535,7 +663,7 @@ public final class BankPythonAnalysis {
           || "Argument".equals(k) && (has(n, "=") || has(n, "*") || has(n, "**"))
           || "Test".equals(k) && cs.size() > 1) return unsupportedExpr(n, scope, depth + 1);
       if ("Expr".equals(k) && cs.size() > 1) {
-        BankFlow.Expr e = expr("BINARY", n);
+        BusinessFlow.Expr e = expr("BINARY", n);
         e.operator = n.getChildCount() == 3 ? n.getChild(1).getText() : "unknown";
         for (ParserRuleContext c : cs) e.args.add(expression(c, scope, depth + 1));
         return e;
@@ -544,23 +672,23 @@ public final class BankPythonAnalysis {
       return composite(n, scope, depth + 1);
     }
 
-    BankFlow.Expr atomExpression(ParserRuleContext n, Scope scope, int depth) {
+    BusinessFlow.Expr atomExpression(ParserRuleContext n, Scope scope, int depth) {
       ParserRuleContext atom = direct(n, "Atom");
-      BankFlow.Expr value = expression(atom, scope, depth + 1);
+      BusinessFlow.Expr value = expression(atom, scope, depth + 1);
       String path = direct(atom, "Name") == null ? "" : text(atom);
       boolean receiver = false;
       for (ParserRuleContext trailer : directs(n, "Trailer")) {
         if (has(trailer, ".")) {
           String member = text(direct(trailer, "Name"));
           if (path.length() > 0) path += "." + member;
-          BankFlow.Expr field = expr("MEMBER", trailer);
+          BusinessFlow.Expr field = expr("MEMBER", trailer);
           field.name = member;
           field.receiver = value;
           value = field;
         } else if (has(trailer, "(")) {
-          BankFlow.Expr call = expr("CALL", n);
+          BusinessFlow.Expr call = expr("CALL", n);
           call.symbol = symbol(path, scope, n.getStart().getTokenIndex());
-          BankPolicy.Receiver mappedReceiver = receiver(path, scope);
+          BusinessPolicy.Receiver mappedReceiver = receiver(path, scope);
           if (mappedReceiver != null)
             call.bindingUncertain = !"reviewed".equals(mappedReceiver.assurance);
           ParserRuleContext arglist = direct(trailer, "Arglist");
@@ -592,15 +720,17 @@ public final class BankPythonAnalysis {
             call.receiver = expr("NAME", atom);
             call.receiver.name = root(path);
           }
-          if (call.symbol.length() == 0) unsupported = true;
+          if ("CALL".equals(call.kind) && call.receiver == null)
+            bindLocalCall(call, path, scope, n.getStart().getTokenIndex());
+          if (call.symbol.length() == 0 && call.localTargetId.length() == 0) unsupported = true;
           value = call;
           path = "";
           receiver = true;
         } else {
-          BankFlow.Expr sub;
+          BusinessFlow.Expr sub;
           ParserRuleContext subscripts = direct(trailer, "Subscriptlist");
           List<ParserRuleContext> slots = directs(subscripts, "Subscript_");
-          BankFlow.Expr key =
+          BusinessFlow.Expr key =
               slots.size() == 1 && !has(subscripts, ",") && !has(slots.get(0), ":")
                   ? expression(slots.get(0), scope, depth + 1)
                   : null;
@@ -623,11 +753,24 @@ public final class BankPythonAnalysis {
       return value;
     }
 
+    void bindLocalCall(BusinessFlow.Expr call, String name, Scope scope, int at) {
+      if (!identifier(name) || scope.opaque) return;
+      LocalFunction target = scope.localFunctions.get(name);
+      if (target == null || target.at >= at || target.parameters.size() != call.args.size()) return;
+      Set<Integer> assigned = new HashSet<Integer>();
+      for (int i = 0; i < call.args.size(); i++) {
+        String keyword = call.argNames.get(i);
+        int slot = keyword.length() == 0 ? i : target.parameters.indexOf(keyword);
+        if (slot < 0 || !assigned.add(Integer.valueOf(slot))) return;
+      }
+      call.localTargetId = target.id;
+    }
+
     String symbol(String path, Scope scope, int at) {
       if (path.length() == 0 || scope.opaque) return "";
       String root = root(path);
       if (scope.mutated.contains(root)) return "";
-      BankPolicy.Receiver mappedReceiver = receiver(path, scope);
+      BusinessPolicy.Receiver mappedReceiver = receiver(path, scope);
       if (mappedReceiver != null) {
         String suffix = path.substring(scope.receiverName.length() + 1);
         return mappedReceiver.type + suffix.substring(suffix.indexOf('.'));
@@ -642,7 +785,7 @@ public final class BankPythonAnalysis {
       return imported == null ? "" : imported + path.substring(root.length());
     }
 
-    BankPolicy.Receiver receiver(String path, Scope scope) {
+    BusinessPolicy.Receiver receiver(String path, Scope scope) {
       if (scope.opaque
           || scope.owner.length() == 0
           || scope.receiverName.length() == 0
@@ -654,16 +797,16 @@ public final class BankPythonAnalysis {
       return dot < 0 ? null : policy.receiver(scope.owner, suffix.substring(0, dot));
     }
 
-    BankFlow.Expr dictionary(ParserRuleContext atom, Scope scope, int depth) {
+    BusinessFlow.Expr dictionary(ParserRuleContext atom, Scope scope, int depth) {
       ParserRuleContext items = direct(atom, "Dictorsetmaker");
-      BankFlow.Expr out = expr("MAP", atom);
+      BusinessFlow.Expr out = expr("MAP", atom);
       if (items == null) return out;
       if (!has(items, ":") || has(items, "**") || direct(items, "Comp_for") != null)
         return unsupportedExpr(atom, scope, depth + 1);
       List<ParserRuleContext> parts = directs(items, "Test");
       if ((parts.size() & 1) != 0) return unsupportedExpr(atom, scope, depth + 1);
       for (int i = 0; i < parts.size(); i += 2) {
-        BankFlow.Expr key = expression(parts.get(i), scope, depth + 1);
+        BusinessFlow.Expr key = expression(parts.get(i), scope, depth + 1);
         if (!"LITERAL".equals(key.kind)
             || !(key.literal instanceof String)
             || out.members.containsKey((String) key.literal))
@@ -673,21 +816,21 @@ public final class BankPythonAnalysis {
       return out;
     }
 
-    BankFlow.Expr unsupportedExpr(ParserRuleContext n, Scope scope, int depth) {
+    BusinessFlow.Expr unsupportedExpr(ParserRuleContext n, Scope scope, int depth) {
       unsupported = true;
-      BankFlow.Expr e = expr("UNKNOWN", n);
+      BusinessFlow.Expr e = expr("UNKNOWN", n);
       for (ParserRuleContext child : children(n)) e.args.add(expression(child, scope, depth + 1));
       return e;
     }
 
-    BankFlow.Expr composite(ParserRuleContext n, Scope scope, int depth) {
-      BankFlow.Expr e = expr("COMPOSITE", n);
+    BusinessFlow.Expr composite(ParserRuleContext n, Scope scope, int depth) {
+      BusinessFlow.Expr e = expr("COMPOSITE", n);
       for (ParserRuleContext child : children(n)) e.args.add(expression(child, scope, depth + 1));
       return e;
     }
 
-    BankFlow.Expr expr(String kind, ParserRuleContext n) {
-      BankFlow.Expr e = new BankFlow.Expr(kind);
+    BusinessFlow.Expr expr(String kind, ParserRuleContext n) {
+      BusinessFlow.Expr e = new BusinessFlow.Expr(kind);
       e.path = file.path;
       e.line = n.getStart().getLine();
       return e;

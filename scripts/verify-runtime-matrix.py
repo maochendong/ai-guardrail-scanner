@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the shipped MCP JAR in real JVM processes; never execute target projects."""
-from report_schema import verify_unknowns
+from report_schema import verify_unknowns, verified_report_content
 import argparse
 import hashlib
 import json
@@ -78,10 +78,10 @@ class Client:
 
     def initialize(self):
         value = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.6.0'}})
+                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.7.0'}})
         self.process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         self.process.stdin.flush()
-        assert value['serverInfo']['version'] == '0.6.0'
+        assert value['serverInfo']['version'] == '0.7.0'
         return value
 
     def close(self):
@@ -208,22 +208,21 @@ def main():
                 assert state['state'] == 'COMPLETED', state
                 formats = {fmt: client.tool('guardrail_scan_result', {'scanId': scan_id, 'format': fmt})
                            for fmt in ['json', 'markdown', 'sarif']}
-                for fmt, result in formats.items():
-                    assert not result['contentOmitted'], (project, fmt)
-                    assert Path(result['artifacts'][fmt]).read_text() == result['content']
-                report = json.loads(formats['json']['content'])
-                sarif = json.loads(formats['sarif']['content'])['runs'][0]
+                documents = {fmt: verified_report_content(result, fmt, state, runtime_output / 'reports', str(project))
+                             for fmt, result in formats.items()}
+                report = json.loads(documents['json'])
+                sarif = json.loads(documents['sarif'])['runs'][0]
                 assert report['runtime']['javaVersion'].startswith(('1.7.', '1.8.'))
                 assert report['runtime']['javaVersion'] in version_text
-                assert report['schemaVersion'] == '1.5'
+                assert report['schemaVersion'] == '1.6'
                 verify_policy(report, args.profile, args.bank_policy)
                 assert {a['ruleId'] for a in report['assessments']} == expected_ids(
                     rules, report['project']['languages'], args.profile)
                 assert state['policy'] == report['policy']
                 assert state['gateDecision'] == report['gateDecision']
-                verify_unknowns(report, state, sarif['properties'], formats['markdown']['content'], str(project))
-                assert report['runtime']['scannerVersion'] == '0.6.0'
-                assert report['ruleSetVersion'] == 'java-python-guardrail-v7'
+                verify_unknowns(report, state, sarif['properties'], documents['markdown'], str(project))
+                assert report['runtime']['scannerVersion'] == '0.7.0'
+                assert report['ruleSetVersion'] == 'java-python-guardrail-v8'
                 if args.require_python_parse_success:
                     assert not any(d['code'] in ['PYTHON_PARSE_FAILED', 'PYTHON_PARSE_DEPTH',
                                                  'PYTHON_ANALYSIS_LIMIT', 'BANK_PYTHON_PARSE_FAILED',

@@ -8,7 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 import org.junit.Test;
 
-public class BankPolicySemanticTest {
+public class BusinessPolicySemanticTest {
   private static final String SOURCE =
       "{\"symbol\":\"arbitrary.Provider#read\",\"arity\":2,\"kind\":\"source\",\"label\":\"model-output\"}";
   private static final String CHECK =
@@ -16,8 +16,8 @@ public class BankPolicySemanticTest {
   private static final String HASH =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-  private BankPolicy parse(String contracts) throws Exception {
-    return BankPolicy.parse("bank-all", "{\"version\":2,\"contracts\":[" + contracts + "]}");
+  private BusinessPolicy parse(String contracts) throws Exception {
+    return BusinessPolicy.parse("bank-all", "{\"version\":2,\"contracts\":[" + contracts + "]}");
   }
 
   private String add(String contract, String fields) {
@@ -26,7 +26,7 @@ public class BankPolicySemanticTest {
 
   private void rejected(String json) throws Exception {
     try {
-      BankPolicy.parse("bank-all", json);
+      BusinessPolicy.parse("bank-all", json);
       fail("accepted invalid policy");
     } catch (IOException expected) {
       assertEquals("INVALID_BANK_POLICY", expected.getMessage());
@@ -39,8 +39,8 @@ public class BankPolicySemanticTest {
 
   @Test
   public void v2DefaultsRemainConservativeWhileV1RemainsCompatible() throws Exception {
-    BankPolicy policy = parse(CHECK);
-    BankPolicy.Contract c = policy.contract("arbitrary.Policy#check", 1);
+    BusinessPolicy policy = parse(CHECK);
+    BusinessPolicy.Contract c = policy.contract("arbitrary.Policy#check", 1);
     assertEquals("reviewed", c.assurance);
     assertEquals("unknown", c.failureMode);
     assertEquals("boolean", c.mode);
@@ -50,7 +50,7 @@ public class BankPolicySemanticTest {
     assertEquals("", c.decisionSymbol);
     assertEquals(-1, c.decisionArg);
     assertTrue(c.parameterNames.isEmpty());
-    BankPolicy old = BankPolicy.parse("bank-all", "{\"version\":1,\"contracts\":[" + CHECK + "]}");
+    BusinessPolicy old = BusinessPolicy.parse("bank-all", "{\"version\":1,\"contracts\":[" + CHECK + "]}");
     assertEquals("closed", old.contract("arbitrary.Policy#check", 1).failureMode);
     assertEquals("restricted", old.contract("arbitrary.Policy#check", 1).scope);
     assertEquals("bank-policy-v1", old.metadata().get("version"));
@@ -59,13 +59,13 @@ public class BankPolicySemanticTest {
 
   @Test
   public void optionalV2RootFieldsAndReviewedReceiversAreSupported() throws Exception {
-    assertEquals(0, BankPolicy.parse("bank-all", "{\"version\":2}").contractCount());
-    BankPolicy policy =
-        BankPolicy.parse(
+    assertEquals(0, BusinessPolicy.parse("bank-all", "{\"version\":2}").contractCount());
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-all",
             "{\"version\":2,\"receivers\":["
                 + "{\"owner\":\"example.Store\",\"field\":\"client\",\"type\":\"vendor.Client\"}]}");
-    BankPolicy.Receiver r = policy.receiver("example.Store", "client");
+    BusinessPolicy.Receiver r = policy.receiver("example.Store", "client");
     assertEquals("vendor.Client", r.type);
     assertEquals("reviewed", r.assurance);
     assertNull(policy.receiver("other.Store", "client"));
@@ -75,12 +75,12 @@ public class BankPolicySemanticTest {
 
   @Test
   public void sourceCanDescribeOutboundSlotsAndPythonDefaults() throws Exception {
-    BankPolicy policy =
+    BusinessPolicy policy =
         parse(
             add(
                 SOURCE,
                 "\"outboundArgs\":[0],\"parameterNames\":[\"payload\",\"enabled\"],\"defaults\":{\"enabled\":true}"));
-    BankPolicy.Contract c = policy.contract("arbitrary.Provider#read", 2);
+    BusinessPolicy.Contract c = policy.contract("arbitrary.Provider#read", 2);
     assertEquals(Arrays.asList(0), c.outboundArgs);
     assertEquals(Arrays.asList("payload", "enabled"), c.parameterNames);
     assertEquals(Boolean.TRUE, c.defaults.get("enabled"));
@@ -89,7 +89,7 @@ public class BankPolicySemanticTest {
   @Test
   public void scalarDefaultsPreserveNullStringAndExactNumber() throws Exception {
     String source = SOURCE.replace("\"arity\":2", "\"arity\":3");
-    BankPolicy.Contract c =
+    BusinessPolicy.Contract c =
         parse(
                 add(
                     source,
@@ -103,7 +103,7 @@ public class BankPolicySemanticTest {
 
   @Test
   public void checkProjectsDecisionAndSeparatesFailureAssurance() throws Exception {
-    BankPolicy.Contract c =
+    BusinessPolicy.Contract c =
         parse(
                 add(
                     CHECK,
@@ -133,7 +133,7 @@ public class BankPolicySemanticTest {
 
   @Test
   public void constructorAndReceiverPreservationHaveExplicitSelectors() throws Exception {
-    BankPolicy.Contract ctor =
+    BusinessPolicy.Contract ctor =
         parse(SOURCE.replace("#read", "#<init>")).contract("arbitrary.Provider#<init>", 2);
     assertNotNull(ctor);
     String transform =
@@ -148,7 +148,7 @@ public class BankPolicySemanticTest {
         "{\"symbol\":\"sample.Service#answer\",\"arity\":2,\"kind\":\"sink\",\"channel\":\"recommend\","
             + "\"boundary\":\"return\",\"args\":[0],\"identity\":2,\"valuePath\":[\"answer\",\"text\"],"
             + "\"requiresLabel\":\"model-output\",\"scope\":\"restricted\"}";
-    BankPolicy.Contract c = parse(sink).contract("sample.Service#answer", 2);
+    BusinessPolicy.Contract c = parse(sink).contract("sample.Service#answer", 2);
     assertEquals("return", c.boundary);
     assertEquals(2, c.identity);
     assertEquals(Arrays.asList("answer", "text"), c.valuePath);
@@ -161,7 +161,7 @@ public class BankPolicySemanticTest {
   public void zeroArgumentRetrievalCanDeclareAbsentIdentityAndUnknownScope() throws Exception {
     String sink =
         "{\"symbol\":\"sample.Repository#all\",\"arity\":0,\"kind\":\"sink\",\"channel\":\"retrieve\",\"args\":[],\"identity\":-1}";
-    BankPolicy.Contract c = parse(sink).contract("sample.Repository#all", 0);
+    BusinessPolicy.Contract c = parse(sink).contract("sample.Repository#all", 0);
     assertTrue(c.args.isEmpty());
     assertEquals(-1, c.identity);
     assertEquals("unknown", c.scope);
@@ -171,7 +171,7 @@ public class BankPolicySemanticTest {
   @Test
   public void differentAritiesAreCandidatesButDuplicateSelectorsAreForbidden() throws Exception {
     String other = SOURCE.replace("\"arity\":2", "\"arity\":1");
-    List<BankPolicy.Contract> found =
+    List<BusinessPolicy.Contract> found =
         parse(SOURCE + "," + other).contractsForSymbol("arbitrary.Provider#read");
     assertEquals(2, found.size());
     rejectedContract(SOURCE + "," + SOURCE);
@@ -182,8 +182,8 @@ public class BankPolicySemanticTest {
 
   @Test
   public void sourceBindingAndMetadataNeverExportMappings() throws Exception {
-    BankPolicy policy =
-        BankPolicy.parse(
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-all",
             "{\"version\":2,\"sourceDigests\":[\"" + HASH + "\"],\"contracts\":[" + SOURCE + "]}");
     assertTrue(policy.matchesSourceDigest(HASH));

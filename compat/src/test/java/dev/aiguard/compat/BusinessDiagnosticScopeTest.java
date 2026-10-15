@@ -12,7 +12,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /** Diagnostic scope must not erase evidence from an independent mapped path. */
-public class BankDiagnosticScopeTest {
+public class BusinessDiagnosticScopeTest {
   @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
   private static final Cancel NEVER =
@@ -25,8 +25,8 @@ public class BankDiagnosticScopeTest {
       "import edge\ndef run():\n    value = edge.make()\n"
           + "    if edge.check(value):\n        edge.release(value)\n";
 
-  private BankPolicy policy() throws Exception {
-    return BankPolicy.parse(
+  private BusinessPolicy policy() throws Exception {
+    return BusinessPolicy.parse(
         "bank-common",
         "{\"version\":2,\"contracts\":["
             + "{\"symbol\":\"edge.make\",\"arity\":0,\"kind\":\"source\",\"label\":\"model-output\"},"
@@ -51,7 +51,7 @@ public class BankDiagnosticScopeTest {
   @SuppressWarnings("unchecked")
   private Map<String, Object> guard(Map<String, Object> report) {
     for (Map<String, Object> item : (List<Map<String, Object>>) report.get("assessments"))
-      if (BankPolicy.GUARD.equals(item.get("ruleId"))) return item;
+      if (BusinessPolicy.GUARD.equals(item.get("ruleId"))) return item;
     throw new AssertionError("Missing guard assessment");
   }
 

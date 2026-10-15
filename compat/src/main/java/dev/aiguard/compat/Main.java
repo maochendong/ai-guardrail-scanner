@@ -21,7 +21,7 @@ public final class Main {
   private static int run(String[] args) throws Exception {
     if (args.length == 0 || "--help".equals(args[0])) {
       System.out.println(
-          "AI Guardrail Scanner 0.6.0 (native Java 7+)\n"
+          "AI Guardrail Scanner 0.7.0 (native Java 7+)\n"
               + "  rules\n"
               + "  scan /absolute/repository --output /absolute/reports\n"
               + "  mcp --allow-root /absolute/root [--allow-root /another] --output"
@@ -52,7 +52,7 @@ public final class Main {
         else throw new IllegalArgumentException("INVALID_ARGUMENTS");
       }
       if (output == null) throw new IllegalArgumentException("OUTPUT_REQUIRED");
-      BankPolicy loaded = BankPolicy.load(profile, bankPolicy);
+      BusinessPolicy loaded = BusinessPolicy.load(profile, bankPolicy);
       for (Path root : roots) loaded.checkRepository(root);
       final ScanService service = new ScanService(roots, output, loaded);
       Thread hook =
@@ -88,7 +88,7 @@ public final class Main {
         else throw new IllegalArgumentException("INVALID_ARGUMENTS");
       }
       if (output == null) throw new IllegalArgumentException("OUTPUT_REQUIRED");
-      BankPolicy loaded = BankPolicy.load(profile, bankPolicy);
+      BusinessPolicy loaded = BusinessPolicy.load(profile, bankPolicy);
       loaded.checkRepository(root);
       try (ScanService service = new ScanService(Arrays.asList(root), output, loaded)) {
         Map<String, Object> status = service.start(root);

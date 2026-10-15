@@ -68,8 +68,8 @@ public class JavaSyntaxCacheTest {
     JavaSyntax.Cache cache = new JavaSyntax.Cache();
     JavaSyntax.Unit unit = cache.parse(file, NONE);
     AnalysisResult first = JavaAnalysis.analyze(Arrays.asList(file), NONE, cache);
-    BankFlow.Program bank =
-        BankJavaAnalysis.adapt(Arrays.asList(file), NONE, BankPolicy.generic(), cache);
+    BusinessFlow.Program bank =
+        BusinessJavaAnalysis.adapt(Arrays.asList(file), NONE, BusinessPolicy.generic(), cache);
     AnalysisResult again = JavaAnalysis.analyze(Arrays.asList(file), NONE, cache);
     assertSame(unit, cache.parse(file, NONE));
     assertEquals(2, bank.functions.size());

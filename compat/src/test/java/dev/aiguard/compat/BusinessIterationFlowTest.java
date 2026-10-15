@@ -10,13 +10,13 @@ import java.util.concurrent.CancellationException;
 import org.junit.Test;
 
 /** Independent regressions for bounded iteration, causal site detail and conditional boundaries. */
-public class BankIterationFlowTest {
+public class BusinessIterationFlowTest {
   private static final Cancel NEVER =
       new Cancel() {
         public void check() {}
       };
 
-  private BankPolicy policy() throws Exception {
+  private BusinessPolicy policy() throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     contracts.add(Findings.map("symbol", "edge.stream", "arity", 0, "kind", "source",
         "label", "model-output"));
@@ -44,7 +44,7 @@ public class BankIterationFlowTest {
     contracts.add(Findings.map("symbol", "workflow.forward", "arity", 1, "kind", "sink",
         "channel", "release", "boundary", "yield", "args", Arrays.asList(0),
         "valuePath", Arrays.asList("content"), "requiresLabel", "model-output"));
-    return BankPolicy.parse("bank-common",
+    return BusinessPolicy.parse("bank-common",
         Json.COMPACT.toJson(Findings.map("version", 2, "contracts", contracts)));
   }
 
@@ -52,16 +52,16 @@ public class BankIterationFlowTest {
     return "import edge\ndef forward(flag):\n" + body;
   }
 
-  private BankFlow.Program program(String body, BankPolicy policy) {
-    return BankPythonAnalysis.adapt(
+  private BusinessFlow.Program program(String body, BusinessPolicy policy) {
+    return BusinessPythonAnalysis.adapt(
         Arrays.asList(new SourceFile("workflow.py", source(body))), NEVER, policy);
   }
 
   private Map<String, Object> guard(String body) throws Exception {
-    BankPolicy policy = policy();
-    BankAnalysis analysis = BankAnalysis.analyze(program(body, policy), policy, NEVER);
+    BusinessPolicy policy = policy();
+    BusinessAnalysis analysis = BusinessAnalysis.analyze(program(body, policy), policy, NEVER);
     for (Map<String, Object> finding : analysis.assessments)
-      if (BankPolicy.GUARD.equals(finding.get("ruleId"))) return finding;
+      if (BusinessPolicy.GUARD.equals(finding.get("ruleId"))) return finding;
     throw new AssertionError("Missing Guard assessment");
   }
 
@@ -230,12 +230,12 @@ public class BankIterationFlowTest {
 
   @Test
   public void cancellationDuringInterpretationIsPropagated() throws Exception {
-    BankPolicy policy = policy();
-    BankFlow.Program program = program(
+    BusinessPolicy policy = policy();
+    BusinessFlow.Program program = program(
         "    for part in edge.stream():\n        yield {'content': part}\n", policy);
     final int[] checks = {0};
     try {
-      BankAnalysis.analyze(program, policy, new Cancel() {
+      BusinessAnalysis.analyze(program, policy, new Cancel() {
         public void check() {
           if (++checks[0] == 5) throw new CancellationException("cancel iteration");
         }

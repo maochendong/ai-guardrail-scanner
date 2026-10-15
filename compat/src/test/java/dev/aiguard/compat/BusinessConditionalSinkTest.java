@@ -6,7 +6,7 @@ import java.io.IOException;
 import java.util.*;
 import org.junit.Test;
 
-public class BankConditionalSinkTest {
+public class BusinessConditionalSinkTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
@@ -32,8 +32,8 @@ public class BankConditionalSinkTest {
         Findings.map("arg", 0, "equals", equals));
   }
 
-  private BankPolicy policy(Map<String, Object> sink) throws Exception {
-    return BankPolicy.parse(
+  private BusinessPolicy policy(Map<String, Object> sink) throws Exception {
+    return BusinessPolicy.parse(
         "bank-all",
         new com.google.gson.GsonBuilder()
             .serializeNulls()
@@ -72,9 +72,9 @@ public class BankConditionalSinkTest {
   }
 
   private Map<String, Object> scan(String body, Object equals) throws Exception {
-    BankPolicy policy = policy(sink(equals));
-    BankFlow.Program program =
-        BankJavaAnalysis.adapt(
+    BusinessPolicy policy = policy(sink(equals));
+    BusinessFlow.Program program =
+        BusinessJavaAnalysis.adapt(
             Arrays.asList(
                 new SourceFile(
                     "Sample.java",
@@ -84,8 +84,8 @@ public class BankConditionalSinkTest {
                         + "}}")),
             NONE,
             policy);
-    for (Map<String, Object> item : BankAnalysis.analyze(program, policy, NONE).assessments)
-      if (BankPolicy.GUARD.equals(item.get("ruleId"))) return item;
+    for (Map<String, Object> item : BusinessAnalysis.analyze(program, policy, NONE).assessments)
+      if (BusinessPolicy.GUARD.equals(item.get("ruleId"))) return item;
     throw new AssertionError();
   }
 

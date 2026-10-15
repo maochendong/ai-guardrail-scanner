@@ -49,8 +49,8 @@ public class PythonSyntaxCacheTest {
     assertEquals("SYNTAX", unit.failureReason);
     assertSame(unit, cache.parse(file, NEVER));
     AnalysisResult generic = PythonAnalysis.analyze(Arrays.asList(file), NEVER, cache);
-    BankFlow.Program bank =
-        BankPythonAnalysis.adapt(Arrays.asList(file), NEVER, BankPolicy.generic(), cache);
+    BusinessFlow.Program bank =
+        BusinessPythonAnalysis.adapt(Arrays.asList(file), NEVER, BusinessPolicy.generic(), cache);
     assertTrue(hasCode(generic.diagnostics, "PYTHON_PARSE_FAILED"));
     assertTrue(hasCode(generic.diagnostics, "PYTHON_FSTRING_BOUNDARY"));
     assertTrue(hasCode(bank.diagnostics, "BANK_PYTHON_PARSE_FAILED"));
@@ -113,22 +113,22 @@ public class PythonSyntaxCacheTest {
                 + "import edge\ndef run():\n    value = edge.make()\n"
                 + "    if edge.check(value):\n        edge.release(value)\n");
     List<SourceFile> files = Arrays.asList(file);
-    BankPolicy policy = policy();
+    BusinessPolicy policy = policy();
     AnalysisResult independentGeneric = PythonAnalysis.analyze(files, NEVER);
-    BankAnalysis independentBank =
-        BankAnalysis.analyze(BankPythonAnalysis.adapt(files, NEVER, policy), policy, NEVER);
+    BusinessAnalysis independentBank =
+        BusinessAnalysis.analyze(BusinessPythonAnalysis.adapt(files, NEVER, policy), policy, NEVER);
     PythonSyntax.Cache cache = new PythonSyntax.Cache();
     PythonSyntax.Unit unit = cache.parse(file, NEVER);
     String treeBefore = unit.tree.toStringTree();
     AnalysisResult sharedGeneric = PythonAnalysis.analyze(files, NEVER, cache);
-    BankAnalysis sharedBank =
-        BankAnalysis.analyze(BankPythonAnalysis.adapt(files, NEVER, policy, cache), policy, NEVER);
+    BusinessAnalysis sharedBank =
+        BusinessAnalysis.analyze(BusinessPythonAnalysis.adapt(files, NEVER, policy, cache), policy, NEVER);
     assertEquals(Json.COMPACT.toJson(independentGeneric), Json.COMPACT.toJson(sharedGeneric));
     assertEquals(independentBank.assessments, sharedBank.assessments);
     assertEquals(independentBank.diagnostics, sharedBank.diagnostics);
     assertEquals(independentBank.mappingCoverage, sharedBank.mappingCoverage);
     assertTrue(hasDisposition(sharedGeneric.assessments, "AI-PY-003", "VIOLATED"));
-    assertTrue(hasDisposition(sharedBank.assessments, BankPolicy.GUARD, "OBSERVED"));
+    assertTrue(hasDisposition(sharedBank.assessments, BusinessPolicy.GUARD, "OBSERVED"));
     assertSame(unit, cache.parse(file, NEVER));
     assertEquals(treeBefore, unit.tree.toStringTree());
   }
@@ -140,7 +140,7 @@ public class PythonSyntaxCacheTest {
     List<SourceFile> files = Arrays.asList(file);
     PythonSyntax.Cache cache = new PythonSyntax.Cache();
     PythonSyntax.Unit unit = cache.parse(file, NEVER);
-    BankFlow.Program bank = BankPythonAnalysis.adapt(files, NEVER, BankPolicy.generic(), cache);
+    BusinessFlow.Program bank = BusinessPythonAnalysis.adapt(files, NEVER, BusinessPolicy.generic(), cache);
     assertTrue(hasCode(bank.diagnostics, "BANK_PYTHON_ANALYSIS_LIMIT"));
     assertTrue(bank.functions.isEmpty());
     assertTrue(bank.incompletePaths.contains(file.path));
@@ -171,11 +171,11 @@ public class PythonSyntaxCacheTest {
     PythonSyntax.Cache cache = new PythonSyntax.Cache();
     AnalysisResult generic = PythonAnalysis.analyze(files, NEVER, cache);
     assertTrue(hasCode(generic.diagnostics, "PYTHON_FLOW_LIMIT"));
-    BankPolicy policy = policy();
-    BankFlow.Program program = BankPythonAnalysis.adapt(files, NEVER, policy, cache);
+    BusinessPolicy policy = policy();
+    BusinessFlow.Program program = BusinessPythonAnalysis.adapt(files, NEVER, policy, cache);
     assertTrue(program.incompletePaths.isEmpty());
-    BankAnalysis bank = BankAnalysis.analyze(program, policy, NEVER);
-    assertTrue(hasDisposition(bank.assessments, BankPolicy.GUARD, "OBSERVED"));
+    BusinessAnalysis bank = BusinessAnalysis.analyze(program, policy, NEVER);
+    assertTrue(hasDisposition(bank.assessments, BusinessPolicy.GUARD, "OBSERVED"));
     assertNotNull(cache.parse(file, NEVER).tree);
     assertEquals("", cache.parse(file, NEVER).failureReason);
   }
@@ -200,8 +200,8 @@ public class PythonSyntaxCacheTest {
     return false;
   }
 
-  private BankPolicy policy() throws Exception {
-    return BankPolicy.parse(
+  private BusinessPolicy policy() throws Exception {
+    return BusinessPolicy.parse(
         "bank-common",
         "{\"version\":2,\"contracts\":["
             + "{\"symbol\":\"edge.make\",\"arity\":0,\"kind\":\"source\",\"label\":\"model-output\"},"

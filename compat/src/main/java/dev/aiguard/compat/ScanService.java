@@ -30,10 +30,10 @@ public final class ScanService implements AutoCloseable {
   }
 
   public ScanService(List<Path> roots, Path output) throws IOException {
-    this(roots, output, BankPolicy.generic());
+    this(roots, output, BusinessPolicy.generic());
   }
 
-  public ScanService(List<Path> roots, Path output, final BankPolicy bankPolicy)
+  public ScanService(List<Path> roots, Path output, final BusinessPolicy bankPolicy)
       throws IOException {
     this(
         roots,

@@ -8,13 +8,13 @@ import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 
-public class BankJavaInitializationTest {
+public class BusinessJavaInitializationTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
       };
 
-  private BankAnalysis analyze(String body) throws Exception {
+  private BusinessAnalysis analyze(String body) throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     contracts.add(
         Findings.map(
@@ -59,22 +59,22 @@ public class BankJavaInitializationTest {
             "release",
             "args",
             Arrays.asList(0)));
-    BankPolicy policy =
-        BankPolicy.parse(
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-common", Json.COMPACT.toJson(Findings.map("version", 2, "contracts", contracts)));
-    BankFlow.Program program =
-        BankJavaAnalysis.adapt(
+    BusinessFlow.Program program =
+        BusinessJavaAnalysis.adapt(
             Arrays.asList(
                 new SourceFile(
                     "src/Example.java", "import edge.Port; class Example { " + body + " }")),
             NONE,
             policy);
-    return BankAnalysis.analyze(program, policy, NONE);
+    return BusinessAnalysis.analyze(program, policy, NONE);
   }
 
-  private void guard(String expected, BankAnalysis analysis) {
+  private void guard(String expected, BusinessAnalysis analysis) {
     for (Map<String, Object> assessment : analysis.assessments)
-      if (BankPolicy.GUARD.equals(assessment.get("ruleId"))) {
+      if (BusinessPolicy.GUARD.equals(assessment.get("ruleId"))) {
         assertEquals(assessment.toString(), expected, assessment.get("disposition"));
         return;
       }

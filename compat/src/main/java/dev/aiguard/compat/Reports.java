@@ -253,6 +253,7 @@ public final class Reports {
         if (Boolean.TRUE.equals(a.get("controlReviewSitesTruncated")))
           out.append("- 限制：控制复核列表已截断；复核动作未覆盖全部控制调用。\n");
       }
+      appendAnalysisContext(out, a);
       for (Map<String, Object> e : list(a, "evidence"))
         out.append("- ")
             .append(escape(e.get("path")))
@@ -268,6 +269,50 @@ public final class Reports {
       out.append('\n');
     }
     return out.toString();
+  }
+
+  private static void appendAnalysisContext(StringBuilder out, Map<String, Object> assessment) {
+    for (Map<String, Object> site : optionalList(assessment, "callContextSites"))
+      out.append("\n调用上下文：")
+          .append(escape(site.get("callPath")))
+          .append(" 第 ")
+          .append(escape(site.get("callLine")))
+          .append(" 行 → ")
+          .append(escape(site.get("calleePath")))
+          .append(" 第 ")
+          .append(escape(site.get("calleeLine")))
+          .append(" 行；绑定：")
+          .append(escape(site.get("binding")))
+          .append("；参数身份：")
+          .append(escape(site.get("parameterStates")))
+          .append('\n');
+    if (Boolean.TRUE.equals(assessment.get("callContextSitesTruncated")))
+      out.append("- 限制：调用上下文列表已截断。\n");
+    for (Map<String, Object> site : optionalList(assessment, "streamTimingSites")) {
+      out.append("\n首包时序：")
+          .append(escape(site.get("path")))
+          .append(" 第 ")
+          .append(escape(site.get("line")))
+          .append(" 行；检查：")
+          .append(escape(site.get("checkPath")))
+          .append(" 第 ")
+          .append(escape(site.get("checkLine")))
+          .append(" 行；顺序：")
+          .append(escape(site.get("ordering")))
+          .append("；值绑定：")
+          .append(escape(site.get("valueBinding")))
+          .append("；资格：")
+          .append(escape(site.get("assurance")))
+          .append("；失败语义：")
+          .append(escape(site.get("failureMode")))
+          .append('\n');
+      Object limits = site.get("limits");
+      if (limits instanceof List<?>)
+        for (Object limit : (List<?>) limits)
+          out.append("- 时序限制：").append(escape(limit)).append('\n');
+    }
+    if (Boolean.TRUE.equals(assessment.get("streamTimingSitesTruncated")))
+      out.append("- 限制：首包时序列表已截断。\n");
   }
 
   private static void appendReview(
@@ -309,6 +354,7 @@ public final class Reports {
     List<Map<String, Object>> results = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> unknownDetails = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> otherReviewDetails = new ArrayList<Map<String, Object>>();
+    List<Map<String, Object>> contextDetails = new ArrayList<Map<String, Object>>();
     Map<String, Object> coverage = new LinkedHashMap<String, Object>();
     List<String> unassessed = new ArrayList<String>();
     for (String domain : DOMAINS) {
@@ -325,6 +371,11 @@ public final class Reports {
       if (total == 0) unassessed.add(domain);
     }
     for (Map<String, Object> a : list(report, "assessments")) {
+      if (!optionalList(a, "callContextSites").isEmpty()
+          || !optionalList(a, "streamTimingSites").isEmpty()
+          || Boolean.TRUE.equals(a.get("callContextSitesTruncated"))
+          || Boolean.TRUE.equals(a.get("streamTimingSitesTruncated")))
+        contextDetails.add(unknownDetail(a));
       if ("UNKNOWN".equals(a.get("disposition"))) unknownDetails.add(unknownDetail(a));
       else if (a.get("reviewActions") instanceof List<?> && !list(a, "reviewActions").isEmpty())
         otherReviewDetails.add(unknownDetail(a));
@@ -425,6 +476,8 @@ public final class Reports {
             unknownDetails,
             "reviewAssessmentsDetails",
             otherReviewDetails,
+            "contextAssessmentsDetails",
+            contextDetails,
             "coverage",
             coverage,
             "unassessedDomains",
@@ -491,7 +544,9 @@ public final class Reports {
             "unknownCategory",
             "manualReviewRequired",
             "controlReviewSitesTruncated",
-            "siteAssessmentsTruncated"))
+            "siteAssessmentsTruncated",
+            "callContextSitesTruncated",
+            "streamTimingSitesTruncated"))
       if (assessment.containsKey(key)) out.put(key, assessment.get(key));
     List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     if (assessment.get("unknownReasons") instanceof List<?>)
@@ -542,6 +597,37 @@ public final class Reports {
         sites.add(safe);
       }
       out.put(siteKey, sites);
+    }
+    if (assessment.containsKey("callContextSites")) {
+      List<Map<String, Object>> sites = new ArrayList<Map<String, Object>>();
+      for (Map<String, Object> site : optionalList(assessment, "callContextSites"))
+        sites.add(
+            select(
+                site,
+                "calleePath",
+                "calleeLine",
+                "callPath",
+                "callLine",
+                "binding",
+                "parameterStates"));
+      out.put("callContextSites", sites);
+    }
+    if (assessment.containsKey("streamTimingSites")) {
+      List<Map<String, Object>> sites = new ArrayList<Map<String, Object>>();
+      for (Map<String, Object> site : optionalList(assessment, "streamTimingSites"))
+        sites.add(
+            select(
+                site,
+                "path",
+                "line",
+                "checkPath",
+                "checkLine",
+                "ordering",
+                "valueBinding",
+                "assurance",
+                "failureMode",
+                "limits"));
+      out.put("streamTimingSites", sites);
     }
     return out;
   }

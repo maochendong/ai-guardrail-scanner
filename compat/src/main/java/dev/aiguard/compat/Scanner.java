@@ -6,10 +6,10 @@ import java.util.*;
 
 public final class Scanner {
   public Map<String, Object> scan(Path root, String id, Cancel cancel) throws Exception {
-    return scan(root, id, cancel, BankPolicy.generic());
+    return scan(root, id, cancel, BusinessPolicy.generic());
   }
 
-  public Map<String, Object> scan(Path root, String id, Cancel cancel, BankPolicy policy)
+  public Map<String, Object> scan(Path root, String id, Cancel cancel, BusinessPolicy policy)
       throws Exception {
     policy.checkRepository(root);
     Inventory inventory = Inventory.load(root, cancel);
@@ -51,7 +51,7 @@ public final class Scanner {
               "",
               "No supported production Java or Python source was analyzed."));
     if (policy.enabled()) {
-      BankAnalysis bank = BankAnalysis.analyze(inventory, policy, cancel, javaSyntax, pythonSyntax);
+      BusinessAnalysis bank = BusinessAnalysis.analyze(inventory, policy, cancel, javaSyntax, pythonSyntax);
       assessments.addAll(0, bank.assessments);
       diagnostics.addAll(bank.diagnostics);
       mappingCoverage.putAll(bank.mappingCoverage);
@@ -89,9 +89,9 @@ public final class Scanner {
     Map<String, Object> report =
         Findings.map(
             "schemaVersion",
-            "1.5",
+            "1.6",
             "ruleSetVersion",
-            "java-python-guardrail-v7",
+            "java-python-guardrail-v8",
             "scanId",
             id,
             "createdAt",
@@ -125,7 +125,7 @@ public final class Scanner {
                 "minimumJavaVersion",
                 "1.7",
                 "scannerVersion",
-                "0.6.0"),
+                "0.7.0"),
             "policy",
             policy.metadata(),
             "mappingCoverage",

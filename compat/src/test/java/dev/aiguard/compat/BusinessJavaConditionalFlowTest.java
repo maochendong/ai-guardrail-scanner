@@ -8,13 +8,13 @@ import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 
-public class BankJavaConditionalFlowTest {
+public class BusinessJavaConditionalFlowTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
       };
 
-  private BankAnalysis analyze(String source) throws Exception {
+  private BusinessAnalysis analyze(String source) throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     contracts.add(
         Findings.map(
@@ -75,21 +75,21 @@ public class BankJavaConditionalFlowTest {
             "source",
             "label",
             "model-output"));
-    BankPolicy policy =
-        BankPolicy.parse(
+    BusinessPolicy policy =
+        BusinessPolicy.parse(
             "bank-common", Json.COMPACT.toJson(Findings.map("version", 2, "contracts", contracts)));
-    BankFlow.Program program =
-        BankJavaAnalysis.adapt(
+    BusinessFlow.Program program =
+        BusinessJavaAnalysis.adapt(
             Arrays.asList(
                 new SourceFile("src/Example.java", "package sample;import edge.Port;" + source)),
             NONE,
             policy);
-    return BankAnalysis.analyze(program, policy, NONE);
+    return BusinessAnalysis.analyze(program, policy, NONE);
   }
 
-  private Map<String, Object> guard(BankAnalysis analysis) {
+  private Map<String, Object> guard(BusinessAnalysis analysis) {
     for (Map<String, Object> finding : analysis.assessments)
-      if (BankPolicy.GUARD.equals(finding.get("ruleId"))) return finding;
+      if (BusinessPolicy.GUARD.equals(finding.get("ruleId"))) return finding;
     throw new AssertionError("Missing Guard assessment");
   }
 
@@ -109,7 +109,7 @@ public class BankJavaConditionalFlowTest {
   @Test
   public void implicitVirtualCallRetainsCandidateMappingWithoutEstablishingTrust()
       throws Exception {
-    BankAnalysis analysis =
+    BusinessAnalysis analysis =
         analyze(
             "class Example {Object virtualOutput(){return null;}void f(){Object"
                 + " v=virtualOutput();if(Port.check(v))Port.release(v);}}");
@@ -180,7 +180,7 @@ public class BankJavaConditionalFlowTest {
 
   @Test
   public void ambiguousImplicitOverridesDoNotSelectOneContract() throws Exception {
-    BankAnalysis analysis =
+    BusinessAnalysis analysis =
         analyze(
             "class Example {Object virtualOutput(){return null;}void f(){Object"
                 + " v=virtualOutput();if(Port.check(v))Port.release(v);}}class Child extends"

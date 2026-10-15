@@ -11,15 +11,15 @@ import java.util.Map;
 import java.util.Set;
 
 /** Adapts the existing Java syntax graph; it never executes or loads target classes. */
-public final class BankJavaAnalysis {
+public final class BusinessJavaAnalysis {
   private final JavaGraph graph;
   private final Cancel cancel;
-  private final BankFlow.Program program = new BankFlow.Program();
+  private final BusinessFlow.Program program = new BusinessFlow.Program();
   private final Set<String> diagnostics = new HashSet<String>();
   private final Set<String> duplicateTypes = new HashSet<String>();
   private int remaining = 150000;
 
-  private BankJavaAnalysis(JavaGraph graph, Cancel cancel) {
+  private BusinessJavaAnalysis(JavaGraph graph, Cancel cancel) {
     this.graph = graph;
     this.cancel = cancel;
     Set<String> types = new HashSet<String>();
@@ -30,16 +30,17 @@ public final class BankJavaAnalysis {
       }
   }
 
-  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
-    return adapt(files, cancel, BankPolicy.generic());
+  public static BusinessFlow.Program adapt(List<SourceFile> files, Cancel cancel) {
+    return adapt(files, cancel, BusinessPolicy.generic());
   }
 
-  public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel, BankPolicy policy) {
+  public static BusinessFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BusinessPolicy policy) {
     return adapt(files, cancel, policy, new JavaSyntax.Cache());
   }
 
-  public static BankFlow.Program adapt(
-      List<SourceFile> files, Cancel cancel, BankPolicy policy, JavaSyntax.Cache syntax) {
+  public static BusinessFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BusinessPolicy policy, JavaSyntax.Cache syntax) {
     List<Unit> units = new ArrayList<Unit>();
     for (SourceFile file : files) {
       cancel.check();
@@ -48,11 +49,11 @@ public final class BankJavaAnalysis {
     return adapt(new JavaGraph(units, cancel), cancel);
   }
 
-  public static BankFlow.Program adapt(JavaGraph graph, Cancel cancel) {
-    return new BankJavaAnalysis(graph, cancel).run();
+  public static BusinessFlow.Program adapt(JavaGraph graph, Cancel cancel) {
+    return new BusinessJavaAnalysis(graph, cancel).run();
   }
 
-  private BankFlow.Program run() {
+  private BusinessFlow.Program run() {
     for (Unit unit : graph.units) {
       cancel.check();
       if (unit.syntaxErrors > 0 || unit.root == null) {
@@ -65,7 +66,8 @@ public final class BankJavaAnalysis {
     }
     for (Method method : graph.methods()) {
       cancel.check();
-      BankFlow.Function function = new BankFlow.Function();
+      BusinessFlow.Function function = new BusinessFlow.Function();
+      function.id = key(method.node);
       function.path = method.node.unit.path;
       function.line = method.line;
       function.symbol = method.owner.qualifiedName + "#" + method.name;
@@ -136,7 +138,7 @@ public final class BankJavaAnalysis {
               break;
             }
           if (nested) continue;
-          BankFlow.Function function = new BankFlow.Function();
+          BusinessFlow.Function function = new BusinessFlow.Function();
           function.path = unit.path;
           function.line = call.line;
           function.symbol =
@@ -144,7 +146,7 @@ public final class BankJavaAnalysis {
                   + "#<unmodeled-init-"
                   + call.start
                   + ">";
-          BankFlow.Stmt unknown = statement("UNKNOWN", call);
+          BusinessFlow.Stmt unknown = statement("UNKNOWN", call);
           unknown.expr = expression(call, 0);
           function.body.add(unknown);
           program.functions.add(function);
@@ -187,7 +189,7 @@ public final class BankJavaAnalysis {
       program.diagnostics.add(Findings.diagnostic(code, path, message));
   }
 
-  private void statements(Node node, List<BankFlow.Stmt> out, Method method, int depth) {
+  private void statements(Node node, List<BusinessFlow.Stmt> out, Method method, int depth) {
     if (node == null || node.method != method) return;
     tick(depth);
     if (node.kind.equals("BLOCK")) {
@@ -199,7 +201,7 @@ public final class BankJavaAnalysis {
       return;
     }
     if (node.kind.equals("IF")) {
-      BankFlow.Stmt result = statement("IF", node);
+      BusinessFlow.Stmt result = statement("IF", node);
       result.expr = expression(node.condition, depth + 1);
       statements(node.thenBranch, result.body, method, depth + 1);
       statements(node.elseBranch, result.otherwise, method, depth + 1);
@@ -212,10 +214,10 @@ public final class BankJavaAnalysis {
       return;
     }
     if (node.kind.equals("TRY")) {
-      BankFlow.Stmt result = statement("TRY", node);
+      BusinessFlow.Stmt result = statement("TRY", node);
       for (Node child : node.children) {
         if (child.kind.equals("CATCH")) {
-          List<BankFlow.Stmt> handler = new ArrayList<BankFlow.Stmt>();
+          List<BusinessFlow.Stmt> handler = new ArrayList<BusinessFlow.Stmt>();
           for (Node body : child.children)
             if (!body.kind.equals("PARAM")) statements(body, handler, method, depth + 1);
           result.handlers.add(handler);
@@ -233,11 +235,11 @@ public final class BankJavaAnalysis {
           valueStatement("ASSIGN", key(declaration), node.initializer, node, out, depth + 1);
           return;
         }
-        BankFlow.Stmt result = statement("ASSIGN", node);
+        BusinessFlow.Stmt result = statement("ASSIGN", node);
         result.target = key(declaration);
         result.expr = expression(node.initializer, depth + 1);
         if (!node.name.equals("=")) {
-          BankFlow.Expr combination = expr("UNKNOWN", node);
+          BusinessFlow.Expr combination = expr("UNKNOWN", node);
           combination.args.add(expression(node.receiver, depth + 1));
           combination.args.add(result.expr);
           result.expr = combination;
@@ -253,14 +255,14 @@ public final class BankJavaAnalysis {
       return;
     }
     if (isExpression(node) && !node.kind.equals("ASSIGN")) {
-      BankFlow.Stmt result = statement("EXPR", node);
+      BusinessFlow.Stmt result = statement("EXPR", node);
       result.expr = expression(node, depth + 1);
       out.add(result);
       return;
     }
     // Loops, switches, field writes and unsupported statements preserve candidate calls,
     // but their children must not establish a definite control-flow barrier.
-    BankFlow.Stmt result = statement("UNKNOWN", node);
+    BusinessFlow.Stmt result = statement("UNKNOWN", node);
     if (node.kind.equals("ASSIGN")) result.expr = expression(node, depth + 1);
     else for (Node child : node.children) statements(child, result.body, method, depth + 1);
     out.add(result);
@@ -271,7 +273,12 @@ public final class BankJavaAnalysis {
    * arguments or receivers. Nested conditionals in either arm retain their own branch order.
    */
   private void valueStatement(
-      String kind, String target, Node value, Node location, List<BankFlow.Stmt> out, int depth) {
+      String kind,
+      String target,
+      Node value,
+      Node location,
+      List<BusinessFlow.Stmt> out,
+      int depth) {
     tick(depth);
     Node conditional = value;
     while (conditional != null && conditional.kind.equals("PAREN") && conditional.args.size() == 1)
@@ -279,14 +286,14 @@ public final class BankJavaAnalysis {
     if (conditional != null
         && conditional.kind.equals("CONDITIONAL")
         && conditional.args.size() == 3) {
-      BankFlow.Stmt branch = statement("IF", conditional);
+      BusinessFlow.Stmt branch = statement("IF", conditional);
       branch.expr = expression(conditional.args.get(0), depth + 1);
       valueStatement(kind, target, conditional.args.get(1), location, branch.body, depth + 1);
       valueStatement(kind, target, conditional.args.get(2), location, branch.otherwise, depth + 1);
       out.add(branch);
       return;
     }
-    BankFlow.Stmt result = statement(kind, location);
+    BusinessFlow.Stmt result = statement(kind, location);
     result.target = target;
     if (value != null) result.expr = expression(value, depth + 1);
     out.add(result);
@@ -311,22 +318,26 @@ public final class BankJavaAnalysis {
         || kind.equals("UNKNOWN");
   }
 
-  private BankFlow.Expr expression(Node node, int depth) {
-    if (node == null) return new BankFlow.Expr("UNKNOWN");
+  private BusinessFlow.Expr expression(Node node, int depth) {
+    if (node == null) return new BusinessFlow.Expr("UNKNOWN");
     tick(depth);
     String kind = node.kind;
     if ((kind.equals("PAREN") || kind.equals("CAST")) && node.args.size() == 1)
       return expression(node.args.get(0), depth + 1);
     if (kind.equals("NAME")) {
       Node declaration = graph.declaration(node);
-      BankFlow.Expr result = expr(tracked(declaration, node) ? "NAME" : "UNKNOWN", node);
+      BusinessFlow.Expr result = expr(tracked(declaration, node) ? "NAME" : "UNKNOWN", node);
       if (tracked(declaration, node)) result.name = key(declaration);
       return result;
     }
     if (kind.equals("CALL")) {
-      BankFlow.Expr result = expr("CALL", node);
+      BusinessFlow.Expr result = expr("CALL", node);
       result.symbol = symbol(node);
       JavaGraph.Edge edge = graph.resolve(node);
+      if (!edge.unknown && edge.targets.size() == 1) {
+        result.localTargetId = key(edge.targets.get(0).node);
+        result.localTargetCandidate = edge.candidate;
+      }
       result.bindingUncertain =
           result.symbol.length() == 0
               || node.receiver == null && edge.candidate
@@ -376,11 +387,11 @@ public final class BankJavaAnalysis {
     if (kind.equals("FIELD") && node.receiver != null && !node.name.equals("<unsupported>")) {
       Node declaration = graph.declaration(node);
       if (tracked(declaration, node)) {
-        BankFlow.Expr result = expr("NAME", node);
+        BusinessFlow.Expr result = expr("NAME", node);
         result.name = key(declaration);
         return result;
       }
-      BankFlow.Expr result = expr("MEMBER", node);
+      BusinessFlow.Expr result = expr("MEMBER", node);
       result.receiver = expression(node.receiver, depth + 1);
       result.name = node.name;
       return result;
@@ -388,7 +399,7 @@ public final class BankJavaAnalysis {
     if (kind.equals("ARRAY_ACCESS")
         && node.args.size() == 2
         && stringKey(node.args.get(1)) != null) {
-      BankFlow.Expr result = expr("MEMBER", node);
+      BusinessFlow.Expr result = expr("MEMBER", node);
       result.receiver = expression(node.receiver, depth + 1);
       result.name = stringKey(node.args.get(1));
       return result;
@@ -400,7 +411,7 @@ public final class BankJavaAnalysis {
       boolean constructor = type.length() > 0 && !type.endsWith("[]");
       for (Node child : node.children) if (!node.args.contains(child)) constructor = false;
       if (constructor) {
-        BankFlow.Expr result = expr("NEW", node);
+        BusinessFlow.Expr result = expr("NEW", node);
         result.symbol = type + "#<init>";
         result.bindingUncertain = duplicateTypes.contains(type);
         for (Node arg : node.args) {
@@ -411,7 +422,7 @@ public final class BankJavaAnalysis {
       }
     }
     if (kind.equals("LITERAL")) {
-      BankFlow.Expr result = expr("LITERAL", node);
+      BusinessFlow.Expr result = expr("LITERAL", node);
       if (node.type.equals("boolean")) result.literal = Boolean.valueOf(node.literalValue);
       else if (node.type.equals("null")) result.literal = null;
       else if (node.type.equals("java.lang.String") || node.type.equals("char"))
@@ -440,12 +451,12 @@ public final class BankJavaAnalysis {
     if ((kind.equals("UNARY")
             && (node.name.equals("!") || node.name.equals("+") || node.name.equals("-")))
         || kind.equals("BINARY")) {
-      BankFlow.Expr result = expr(kind, node);
+      BusinessFlow.Expr result = expr(kind, node);
       result.operator = node.name;
       for (Node arg : node.args) result.args.add(expression(arg, depth + 1));
       return result;
     }
-    BankFlow.Expr result = expr("UNKNOWN", node);
+    BusinessFlow.Expr result = expr("UNKNOWN", node);
     if (kind.equals("LAMBDA") || kind.equals("METHOD_REF")) return result;
     if (node.receiver != null && !node.args.contains(node.receiver))
       result.receiver = expression(node.receiver, depth + 1);
@@ -536,15 +547,15 @@ public final class BankJavaAnalysis {
     return declaration.unit.path + ":" + declaration.start + ":" + declaration.name;
   }
 
-  private static BankFlow.Stmt statement(String kind, Node node) {
-    BankFlow.Stmt statement = new BankFlow.Stmt(kind);
+  private static BusinessFlow.Stmt statement(String kind, Node node) {
+    BusinessFlow.Stmt statement = new BusinessFlow.Stmt(kind);
     statement.path = node.unit.path;
     statement.line = node.line;
     return statement;
   }
 
-  private static BankFlow.Expr expr(String kind, Node node) {
-    BankFlow.Expr expression = new BankFlow.Expr(kind);
+  private static BusinessFlow.Expr expr(String kind, Node node) {
+    BusinessFlow.Expr expression = new BusinessFlow.Expr(kind);
     expression.path = node.unit.path;
     expression.line = node.line;
     return expression;

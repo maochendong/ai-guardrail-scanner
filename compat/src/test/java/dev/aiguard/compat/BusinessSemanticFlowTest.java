@@ -8,7 +8,7 @@ import org.junit.Test;
 /**
  * Renamed synthetic APIs exercise semantics without any project-specific selector in the engine.
  */
-public class BankSemanticFlowTest {
+public class BusinessSemanticFlowTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
@@ -56,23 +56,23 @@ public class BankSemanticFlowTest {
     return items;
   }
 
-  private BankPolicy policy(List<Map<String, Object>> items) throws Exception {
-    return BankPolicy.parse(
+  private BusinessPolicy policy(List<Map<String, Object>> items) throws Exception {
+    return BusinessPolicy.parse(
         "bank-all", Json.COMPACT.toJson(Findings.map("version", 2, "contracts", items)));
   }
 
-  private BankAnalysis java(String body, List<Map<String, Object>> items) throws Exception {
-    BankPolicy policy = policy(items);
+  private BusinessAnalysis java(String body, List<Map<String, Object>> items) throws Exception {
+    BusinessPolicy policy = policy(items);
     String source =
         "package sample; import nova.Port; import nova.Decision; class Handler { String run(){"
             + body
             + "}}";
-    BankFlow.Program program =
-        BankJavaAnalysis.adapt(Arrays.asList(new SourceFile("Handler.java", source)), NONE, policy);
-    return BankAnalysis.analyze(program, policy, NONE);
+    BusinessFlow.Program program =
+        BusinessJavaAnalysis.adapt(Arrays.asList(new SourceFile("Handler.java", source)), NONE, policy);
+    return BusinessAnalysis.analyze(program, policy, NONE);
   }
 
-  private Map<String, Object> finding(BankAnalysis result, String id) {
+  private Map<String, Object> finding(BusinessAnalysis result, String id) {
     for (Map<String, Object> item : result.assessments)
       if (id.equals(item.get("ruleId"))) return item;
     throw new AssertionError(id);
@@ -85,11 +85,11 @@ public class BankSemanticFlowTest {
 
   @Test
   public void objectDecisionIsBoundToOriginalOutputAndReturnBoundary() throws Exception {
-    BankAnalysis result = java(guarded(), contracts());
+    BusinessAnalysis result = java(guarded(), contracts());
     assertEquals(
         result.assessments.toString(),
         "OBSERVED",
-        finding(result, BankPolicy.GUARD).get("disposition"));
+        finding(result, BusinessPolicy.GUARD).get("disposition"));
     assertEquals(3, result.mappingCoverage.get("matchedCallSites"));
     assertEquals(1, result.mappingCoverage.get("matchedDefinitions"));
   }
@@ -103,16 +103,16 @@ public class BankSemanticFlowTest {
                 + " result=Port.inspect(text);if(!result.accepted())return \"blocked\";return"
                 + " Port.make();"))
       assertEquals(
-          "VIOLATED", finding(java(body, contracts()), BankPolicy.GUARD).get("disposition"));
+          "VIOLATED", finding(java(body, contracts()), BusinessPolicy.GUARD).get("disposition"));
   }
 
   @Test
   public void failureOpenIsNotPromotedByAcceptedAccessor() throws Exception {
     List<Map<String, Object>> items = contracts();
     items.get(1).put("failureMode", "open");
-    assertEquals("VIOLATED", finding(java(guarded(), items), BankPolicy.GUARD).get("disposition"));
+    assertEquals("VIOLATED", finding(java(guarded(), items), BusinessPolicy.GUARD).get("disposition"));
     items.get(1).put("failureMode", "unknown");
-    Map<String, Object> unknown = finding(java(guarded(), items), BankPolicy.GUARD);
+    Map<String, Object> unknown = finding(java(guarded(), items), BusinessPolicy.GUARD);
     assertEquals("UNKNOWN", unknown.get("disposition"));
     assertEquals("INSUFFICIENT_EVIDENCE", unknown.get("unknownCategory"));
   }
@@ -121,7 +121,7 @@ public class BankSemanticFlowTest {
   public void qualityCandidateCannotEstablishBankGuardCoverage() throws Exception {
     List<Map<String, Object>> items = contracts();
     items.get(1).put("assurance", "candidate");
-    Map<String, Object> unknown = finding(java(guarded(), items), BankPolicy.GUARD);
+    Map<String, Object> unknown = finding(java(guarded(), items), BusinessPolicy.GUARD);
     assertEquals("UNKNOWN", unknown.get("disposition"));
     assertEquals("INSUFFICIENT_EVIDENCE", unknown.get("unknownCategory"));
   }
@@ -135,7 +135,7 @@ public class BankSemanticFlowTest {
         "OBSERVED",
         finding(
                 java("String text=Port.make();Port.inspect(text);return text;", items),
-                BankPolicy.GUARD)
+                BusinessPolicy.GUARD)
             .get("disposition"));
     assertEquals(
         "VIOLATED",
@@ -144,7 +144,7 @@ public class BankSemanticFlowTest {
                     "String text=Port.make();try{Port.inspect(text);}catch(Exception e){return"
                         + " text;}return text;",
                     items),
-                BankPolicy.GUARD)
+                BusinessPolicy.GUARD)
             .get("disposition"));
   }
 
@@ -167,25 +167,25 @@ public class BankSemanticFlowTest {
         "OBSERVED",
         finding(
                 java(guarded().replace("return text;", "return text.trim();"), items),
-                BankPolicy.GUARD)
+                BusinessPolicy.GUARD)
             .get("disposition"));
   }
 
   @Test
   public void unrelatedUnsupportedFunctionDoesNotEraseMappedEvidence() throws Exception {
     List<Map<String, Object>> items = contracts();
-    BankPolicy policy = policy(items);
+    BusinessPolicy policy = policy(items);
     String source =
         "package sample; import nova.Port; import nova.Decision; class Handler {String run(){"
             + guarded()
             + "} void other(){while(true){System.out.println(1);}}}";
-    BankAnalysis result =
-        BankAnalysis.analyze(
-            BankJavaAnalysis.adapt(
+    BusinessAnalysis result =
+        BusinessAnalysis.analyze(
+            BusinessJavaAnalysis.adapt(
                 Arrays.asList(new SourceFile("Handler.java", source)), NONE, policy),
             policy,
             NONE);
-    assertEquals("OBSERVED", finding(result, BankPolicy.GUARD).get("disposition"));
+    assertEquals("OBSERVED", finding(result, BusinessPolicy.GUARD).get("disposition"));
     assertEquals(1, result.mappingCoverage.get("analyzedFunctions"));
   }
 
@@ -207,13 +207,13 @@ public class BankSemanticFlowTest {
             "identity",
             -1));
     Map<String, Object> unknown =
-        finding(java("Port.lookup();return \"fixed\";", items), BankPolicy.ACL);
+        finding(java("Port.lookup();return \"fixed\";", items), BusinessPolicy.ACL);
     assertEquals("UNKNOWN", unknown.get("disposition"));
     assertEquals("INSUFFICIENT_EVIDENCE", unknown.get("unknownCategory"));
     items.get(3).put("scope", "restricted");
     assertEquals(
         "VIOLATED",
-        finding(java("Port.lookup();return \"fixed\";", items), BankPolicy.ACL).get("disposition"));
+        finding(java("Port.lookup();return \"fixed\";", items), BusinessPolicy.ACL).get("disposition"));
   }
 
   @Test
@@ -227,7 +227,7 @@ public class BankSemanticFlowTest {
     check.put("defaults", Findings.map("limit", 5));
     items.get(0).put("symbol", "nova.make");
     items.get(2).put("symbol", "handler.run");
-    BankPolicy policy = policy(items);
+    BusinessPolicy policy = policy(items);
     String source =
         "import nova\n"
             + "def run():\n"
@@ -235,16 +235,16 @@ public class BankSemanticFlowTest {
             + "    if not nova.inspect(limit=3, text=text):\n"
             + "        return 'blocked'\n"
             + "    return text\n";
-    BankAnalysis result =
-        BankAnalysis.analyze(
-            BankPythonAnalysis.adapt(
+    BusinessAnalysis result =
+        BusinessAnalysis.analyze(
+            BusinessPythonAnalysis.adapt(
                 Arrays.asList(new SourceFile("handler.py", source)), NONE, policy),
             policy,
             NONE);
     assertEquals(
         result.assessments.toString(),
         "OBSERVED",
-        finding(result, BankPolicy.GUARD).get("disposition"));
+        finding(result, BusinessPolicy.GUARD).get("disposition"));
   }
 
   @Test
@@ -253,11 +253,11 @@ public class BankSemanticFlowTest {
         "String text=Port.make();Decision result=Port.inspect(text);if(!result.accepted())return"
             + " \"blocked\";try{return text;}finally{Port.modify(text);}";
     assertEquals(
-        "UNKNOWN", finding(java(mutated, contracts()), BankPolicy.GUARD).get("disposition"));
-    BankAnalysis replaced =
+        "UNKNOWN", finding(java(mutated, contracts()), BusinessPolicy.GUARD).get("disposition"));
+    BusinessAnalysis replaced =
         java("String text=Port.make();try{return text;}finally{return \"blocked\";}", contracts());
-    assertEquals("UNKNOWN", finding(replaced, BankPolicy.GUARD).get("disposition"));
-    assertEquals(0, finding(replaced, BankPolicy.GUARD).get("mappedPathOutcomes"));
+    assertEquals("UNKNOWN", finding(replaced, BusinessPolicy.GUARD).get("disposition"));
+    assertEquals(0, finding(replaced, BusinessPolicy.GUARD).get("mappedPathOutcomes"));
   }
 
   @Test
@@ -295,7 +295,7 @@ public class BankSemanticFlowTest {
                     "String v=Port.make();Port.send(java.util.Map.of(\"text\",Port.mask(v)));return"
                         + " \"fixed\";",
                     items),
-                BankPolicy.DATA)
+                BusinessPolicy.DATA)
             .get("disposition"));
     assertEquals(
         "VIOLATED",
@@ -305,7 +305,7 @@ public class BankSemanticFlowTest {
                         + " v=Port.make();Port.send(java.util.Map.of(\"text\",Port.mask(v),\"original\",v));return"
                         + " \"fixed\";",
                     items),
-                BankPolicy.DATA)
+                BusinessPolicy.DATA)
             .get("disposition"));
   }
 
@@ -345,7 +345,7 @@ public class BankSemanticFlowTest {
                         + " map=java.util.Map.of(\"value\",v);Port.modify(map);Port.send(v);return"
                         + " \"fixed\";",
                     items),
-                BankPolicy.DATA)
+                BusinessPolicy.DATA)
             .get("disposition"));
   }
 
@@ -386,22 +386,22 @@ public class BankSemanticFlowTest {
             "release",
             "args",
             Arrays.asList(0, 1)));
-    BankPolicy policy = policy(items);
+    BusinessPolicy policy = policy(items);
     for (String call : Arrays.asList("nova.check(v)", "nova.check(v,1)")) {
       String source =
           "import nova\ndef run():\n    v=nova.data()\n    if not "
               + call
               + ":\n        return\n    nova.release(v,1)\n";
-      BankAnalysis result =
-          BankAnalysis.analyze(
-              BankPythonAnalysis.adapt(
+      BusinessAnalysis result =
+          BusinessAnalysis.analyze(
+              BusinessPythonAnalysis.adapt(
                   Arrays.asList(new SourceFile("demo.py", source)), NONE, policy),
               policy,
               NONE);
       assertEquals(
           result.assessments.toString(),
           "OBSERVED",
-          finding(result, BankPolicy.GUARD).get("disposition"));
+          finding(result, BusinessPolicy.GUARD).get("disposition"));
     }
   }
 
@@ -411,8 +411,8 @@ public class BankSemanticFlowTest {
     for (int i = 0; i < 9; i++)
       body.append("if(Port.condition").append(i).append("()){Port.other();}");
     body.append("return Port.make();");
-    BankAnalysis result = java(body.toString(), contracts());
-    assertEquals("UNKNOWN", finding(result, BankPolicy.GUARD).get("disposition"));
+    BusinessAnalysis result = java(body.toString(), contracts());
+    assertEquals("UNKNOWN", finding(result, BusinessPolicy.GUARD).get("disposition"));
     assertTrue(((Number) result.mappingCoverage.get("matchedBoundarySites")).intValue() > 0);
     boolean merged = false;
     for (Map<String, Object> diagnostic : result.diagnostics)
@@ -423,7 +423,7 @@ public class BankSemanticFlowTest {
   @Test
   public void unknownConstructorCannotRetainGuardProof() throws Exception {
     String body = guarded().replace("return text;", "new nova.ExternalMutation();return text;");
-    assertEquals("UNKNOWN", finding(java(body, contracts()), BankPolicy.GUARD).get("disposition"));
+    assertEquals("UNKNOWN", finding(java(body, contracts()), BusinessPolicy.GUARD).get("disposition"));
   }
 
   @Test
@@ -441,39 +441,39 @@ public class BankSemanticFlowTest {
             "release",
             "args",
             Arrays.asList(0)));
-    BankPolicy policy = policy(items);
+    BusinessPolicy policy = policy(items);
     String source = "import nova\ndef run():\n    nova.release(text='sample')\n";
-    BankAnalysis result =
-        BankAnalysis.analyze(
-            BankPythonAnalysis.adapt(
+    BusinessAnalysis result =
+        BusinessAnalysis.analyze(
+            BusinessPythonAnalysis.adapt(
                 Arrays.asList(new SourceFile("demo.py", source)), NONE, policy),
             policy,
             NONE);
-    assertEquals("UNSUPPORTED", finding(result, BankPolicy.GUARD).get("unknownCategory"));
+    assertEquals("UNSUPPORTED", finding(result, BusinessPolicy.GUARD).get("unknownCategory"));
     assertEquals(1, result.mappingCoverage.get("argumentBindingFailures"));
   }
 
   @Test
   public void deepMappedFlowDoesNotReclassifyRulesWithNoContracts() throws Exception {
-    BankPolicy policy = policy(contracts());
-    BankFlow.Program program = new BankFlow.Program();
-    BankFlow.Function function = new BankFlow.Function();
+    BusinessPolicy policy = policy(contracts());
+    BusinessFlow.Program program = new BusinessFlow.Program();
+    BusinessFlow.Function function = new BusinessFlow.Function();
     function.symbol = "sample.Handler#run";
     program.functions.add(function);
-    List<BankFlow.Stmt> block = function.body;
+    List<BusinessFlow.Stmt> block = function.body;
     for (int i = 0; i < 80; i++) {
-      BankFlow.Stmt node = new BankFlow.Stmt("UNKNOWN");
+      BusinessFlow.Stmt node = new BusinessFlow.Stmt("UNKNOWN");
       block.add(node);
       block = node.body;
     }
-    BankAnalysis result = BankAnalysis.analyze(program, policy, NONE);
-    assertEquals("UNSUPPORTED", finding(result, BankPolicy.GUARD).get("unknownCategory"));
-    assertEquals("MISSING_MAPPING", finding(result, BankPolicy.FACTS).get("unknownCategory"));
+    BusinessAnalysis result = BusinessAnalysis.analyze(program, policy, NONE);
+    assertEquals("UNSUPPORTED", finding(result, BusinessPolicy.GUARD).get("unknownCategory"));
+    assertEquals("MISSING_MAPPING", finding(result, BusinessPolicy.FACTS).get("unknownCategory"));
   }
 
   @Test
   public void emptyMappingHasExplicitMissingReason() throws Exception {
-    Map<String, Object> unknown = finding(java("return \"fixed\";", contracts()), BankPolicy.ACL);
+    Map<String, Object> unknown = finding(java("return \"fixed\";", contracts()), BusinessPolicy.ACL);
     assertEquals("MISSING_MAPPING", unknown.get("unknownCategory"));
   }
 }

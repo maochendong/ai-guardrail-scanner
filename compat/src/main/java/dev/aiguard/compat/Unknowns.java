@@ -178,6 +178,9 @@ public final class Unknowns {
         } else if ("STREAM_ELEMENT_UNRESOLVED".equals(code)) {
           actionCode = "RESOLVE_STREAM_ELEMENT_FLOW";
           required = "补充流元素、回调和输出边界之间的值流用例，证明每个输出元素与校验决策的对应关系后重扫。";
+        } else if ("INTERPROCEDURAL_FLOW_BOUNDED".equals(code)) {
+          actionCode = "EXTEND_CALL_CONTEXT";
+          required = "定位未完成的调用上下文、递归或调用深度，补充参数与返回关系的最小用例；不得把某个调用者的身份或证明复用于其他入口。";
         }
         action = action("EXTEND_ANALYSIS", actionCode, "扫描器维护人员", required, code, locations);
       } else {

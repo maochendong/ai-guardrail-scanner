@@ -67,6 +67,15 @@ UNKNOWN 的 `reviewActions` 给出 `kind`、`code`、`status: OPEN`、`ownerRole
 
 Guard 的 `controlReviewSites` 单独记录实际命中的候选、失败放行或失败语义未知的检查调用（最多 128 项，`controlReviewSitesTruncated` 标示截断）。它与输出位置分开：不计入 `mappedPathOutcomes`，不改变规则处置，不能据此断言某次失败已经释放到客户端。这样即使下游值流尚未打通，也不会隐藏已定位的检查实现复核任务。
 
+0.7.0 报告 schema 升为 `1.6`，兼容既有合同与 `bank-*` 参数，Java 实现类统一命名为 `Business*`。新增两类最多 128 项的独立证据：
+
+- `callContextSites`：调用与被调函数位置、确定/候选绑定、各参数的 trusted/untrusted/unknown 身份状态。它说明具体调用点，不覆盖同一方法的其他入口。`callContextSitesTruncated` 显式说明截断。
+- `streamTimingSites`：首个已映射的本地释放位置、映射检查位置、先后顺序、同值关系、控制资格、失败语义与限制。`streamTimingSitesTruncated` 显式说明截断。没有定位到检查时 `checkPath` 为空、`checkLine` 为 0。
+
+`RELEASE_PRECEDES_MAPPED_CHECK` 表示释放发生在该检查之前，不能推断此前不存在其他控制；`ACCEPTED_CHECK_PRECEDES_RELEASE` 仅用于同值、reviewed、失败阻断且接受分支先于释放的受限事实；其余关系为 `ORDER_UNRESOLVED`。三者均不替代银行规则处置、生产网络验证或循环全部迭代证明。
+
+JSON 保留上述字段，Markdown 展示对应位置与限制；SARIF 的 `contextAssessmentsDetails` 保留有上下文/时序证据或截断的评估，即使其处置并非 UNKNOWN。私有接口符号和源码值不进入这些明细。
+
 `mappingCoverage` 分别给出合同定义数、源码匹配声明数、实际命中调用位置、return/yield 边界、候选绑定、参数绑定失败与分析函数数。位置计数按相对路径、行号和符号去重，同一行同一 API 多次调用可能合并；这些是映射使用统计，不是安全覆盖率。仅有声明不会计作实际调用。
 
 ## 保留的分析边界

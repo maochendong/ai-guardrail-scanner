@@ -9,13 +9,13 @@ import java.util.Map;
 import org.junit.Test;
 
 /** Focused regressions for evaluation order, branch reachability and value-bound proofs. */
-public class BankFlowEdgeTest {
+public class BusinessFlowEdgeTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
       };
 
-  private BankPolicy policy() throws Exception {
+  private BusinessPolicy policy() throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     contracts.add(
         Findings.map(
@@ -109,16 +109,16 @@ public class BankFlowEdgeTest {
               "egress",
               "args",
               Arrays.asList(0)));
-    return BankPolicy.parse(
+    return BusinessPolicy.parse(
         "bank-common", Json.COMPACT.toJson(Findings.map("version", 1, "contracts", contracts)));
   }
 
   private Map<String, Object> result(String body, String rule) throws Exception {
     String source = "import edge.Port; class Example {void run(boolean flag){" + body + "}}";
-    BankFlow.Program program =
-        BankJavaAnalysis.adapt(Arrays.asList(new SourceFile("Example.java", source)), NONE);
+    BusinessFlow.Program program =
+        BusinessJavaAnalysis.adapt(Arrays.asList(new SourceFile("Example.java", source)), NONE);
     assertTrue(program.diagnostics.toString(), program.diagnostics.isEmpty());
-    for (Map<String, Object> item : BankAnalysis.analyze(program, policy(), NONE).assessments)
+    for (Map<String, Object> item : BusinessAnalysis.analyze(program, policy(), NONE).assessments)
       if (rule.equals(item.get("ruleId"))) return item;
     throw new AssertionError("Missing rule " + rule);
   }
@@ -133,8 +133,8 @@ public class BankFlowEdgeTest {
     disposition(
         "OBSERVED",
         "Object v=Port.data();if(!Port.check(v))return;Port.release(v);",
-        BankPolicy.GUARD);
-    disposition("VIOLATED", "Object v=Port.data();Port.release(v);", BankPolicy.GUARD);
+        BusinessPolicy.GUARD);
+    disposition("VIOLATED", "Object v=Port.data();Port.release(v);", BusinessPolicy.GUARD);
   }
 
   @Test
@@ -142,7 +142,7 @@ public class BankFlowEdgeTest {
     disposition(
         "OBSERVED",
         "Object v=Port.data();if(!Port.check(v))return;" + "try{return;}finally{Port.release(v);}",
-        BankPolicy.GUARD);
+        BusinessPolicy.GUARD);
   }
 
   @Test
@@ -150,7 +150,7 @@ public class BankFlowEdgeTest {
     Map<String, Object> item =
         result(
             "Object v=Port.data();try{return;}" + "catch(RuntimeException error){Port.release(v);}",
-            BankPolicy.GUARD);
+            BusinessPolicy.GUARD);
     assertEquals("UNKNOWN", item.get("disposition"));
     assertEquals(0, item.get("mappedPathOutcomes"));
   }
@@ -161,7 +161,7 @@ public class BankFlowEdgeTest {
         result(
             "Object v=Port.data();if(!Port.check(v))return;"
                 + "try{if(false){Port.other();}}finally{Port.release(v);}",
-            BankPolicy.GUARD);
+            BusinessPolicy.GUARD);
     assertFalse(item.toString(), "VIOLATED".equals(item.get("disposition")));
   }
 
@@ -171,14 +171,14 @@ public class BankFlowEdgeTest {
       disposition(
           "OBSERVED",
           "Object v=Port.data();boolean accepted=" + expression + ";if(accepted)Port.release(v);",
-          BankPolicy.GUARD);
+          BusinessPolicy.GUARD);
   }
 
   @Test
   public void constantShortCircuitDoesNotEvaluateUnreachableSink() throws Exception {
     for (String expression : Arrays.asList("false&&Port.release(v)", "true||Port.release(v)")) {
       Map<String, Object> item =
-          result("Object v=Port.data();boolean result=" + expression + ";", BankPolicy.GUARD);
+          result("Object v=Port.data();boolean result=" + expression + ";", BusinessPolicy.GUARD);
       assertEquals("UNKNOWN", item.get("disposition"));
       assertEquals(0, item.get("mappedPathOutcomes"));
     }
@@ -190,7 +190,7 @@ public class BankFlowEdgeTest {
         "OBSERVED",
         "Object user=Port.identity();"
             + "if(!Port.scope(user,\"resource-a\"))return;Port.read(user,\"resource-a\");",
-        BankPolicy.IAM);
+        BusinessPolicy.IAM);
   }
 
   @Test
@@ -198,19 +198,19 @@ public class BankFlowEdgeTest {
     disposition(
         "UNKNOWN",
         "String value=\"data\";if(!Port.check(value+\"!\"))return;" + "Port.release(value+\"!\");",
-        BankPolicy.GUARD);
+        BusinessPolicy.GUARD);
   }
 
   @Test
   public void mutationInLaterArgumentInvalidatesEarlierEvaluatedValue() throws Exception {
     disposition(
-        "UNKNOWN", "Object v=Port.mask(Port.data());Port.send(v,Port.modify(v));", BankPolicy.DATA);
+        "UNKNOWN", "Object v=Port.mask(Port.data());Port.send(v,Port.modify(v));", BusinessPolicy.DATA);
   }
 
   @Test
   public void unknownReceiverMethodInvalidatesTheReceiverValue() throws Exception {
     disposition(
-        "UNKNOWN", "Object v=Port.mask(Port.data());v.modify();Port.send(v);", BankPolicy.DATA);
+        "UNKNOWN", "Object v=Port.mask(Port.data());v.modify();Port.send(v);", BusinessPolicy.DATA);
   }
 
   @Test
@@ -218,7 +218,7 @@ public class BankFlowEdgeTest {
     disposition(
         "OBSERVED",
         "Object v=Port.mask(Port.data());Object unused=new Object();" + "Port.send(v);",
-        BankPolicy.DATA);
+        BusinessPolicy.DATA);
   }
 
   @Test
@@ -227,7 +227,7 @@ public class BankFlowEdgeTest {
         "UNKNOWN",
         "Object v=Port.data();boolean accepted=Port.check(v);Port.other();"
             + "if(accepted)Port.release(v);",
-        BankPolicy.GUARD);
+        BusinessPolicy.GUARD);
   }
 
   @Test
@@ -236,6 +236,6 @@ public class BankFlowEdgeTest {
         "OBSERVED",
         "Object v=Port.data();if(flag){if(!Port.check(v))return;}"
             + "if(!flag)return;Port.release(v);",
-        BankPolicy.GUARD);
+        BusinessPolicy.GUARD);
   }
 }

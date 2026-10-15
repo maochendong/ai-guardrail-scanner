@@ -7,17 +7,23 @@ import java.util.Map;
 import java.util.Set;
 
 /** Bounded, language-neutral local flow. Unknown constructs never establish controls. */
-public final class BankFlow {
-  private BankFlow() {}
+public final class BusinessFlow {
+  private BusinessFlow() {}
 
   public static final class Program {
     public final List<Function> functions = new ArrayList<Function>();
     public final List<Map<String, Object>> diagnostics = new ArrayList<Map<String, Object>>();
+
     /** Files with discarded or unvisited source; local UNKNOWN nodes do not belong here. */
     public final Set<String> incompletePaths = new LinkedHashSet<String>();
   }
 
   public static final class Function {
+    /** Unique source-definition identity; unlike symbol/arity, this separates overloads. */
+    public String id = "";
+    /** Async/decorated or otherwise unresolved execution cannot establish synchronous timing. */
+    public boolean executionUncertain;
+
     public String path = "", symbol = "";
     public int line = 1;
     public final List<String> params = new ArrayList<String>();
@@ -32,6 +38,11 @@ public final class BankFlow {
     public Object literal;
     public Expr receiver;
     public boolean bindingUncertain;
+
+    /** A resolved source definition, never inferred by looking up symbol/arity. */
+    public String localTargetId = "";
+
+    public boolean localTargetCandidate;
     public int line = 1;
     public final List<Expr> args = new ArrayList<Expr>();
     public final List<String> argNames = new ArrayList<String>();
@@ -48,6 +59,8 @@ public final class BankFlow {
 
     public int line = 1;
     public Expr expr;
+    /** For UNKNOWN statements only: adapter-confirmed ordinary computations may set false. */
+    public boolean orderUncertain = true;
     public final List<Stmt> body = new ArrayList<Stmt>();
     public final List<Stmt> otherwise = new ArrayList<Stmt>();
     public final List<List<Stmt>> handlers = new ArrayList<List<Stmt>>();

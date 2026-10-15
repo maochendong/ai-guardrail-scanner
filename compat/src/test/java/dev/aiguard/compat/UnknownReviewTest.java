@@ -69,9 +69,11 @@ public class UnknownReviewTest {
     Map<String, Object> item = finding("GENERIC", "UNKNOWN", 12);
     Unknowns.set(item, Unknowns.UNSUPPORTED, "RECEIVER_BINDING_UNRESOLVED", "Unbound target.");
     Unknowns.set(item, Unknowns.UNSUPPORTED, "STREAM_ELEMENT_UNRESOLVED", "Unbound element.");
+    Unknowns.set(item, Unknowns.UNSUPPORTED, "INTERPROCEDURAL_FLOW_BOUNDED", "Bounded call.");
     assertNotNull(action(item, "RESOLVE_RECEIVER_BINDING"));
     assertNotNull(action(item, "RESOLVE_STREAM_ELEMENT_FLOW"));
-    assertEquals(2, items(item, "reviewActions").size());
+    assertNotNull(action(item, "EXTEND_CALL_CONTEXT"));
+    assertEquals(3, items(item, "reviewActions").size());
     assertEquals(Boolean.FALSE, item.get("manualReviewRequired"));
   }
 

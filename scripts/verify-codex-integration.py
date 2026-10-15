@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verify the configured scanner through Codex without starting a model turn."""
-from report_schema import verify_unknowns
+from report_schema import verify_unknowns, verified_report_content
 from pathlib import Path
 import subprocess,json,threading,queue,time,tomllib,argparse,os
 if not __debug__:
@@ -35,6 +35,8 @@ def installed_option(name):
 assert (installed_option('--profile') or 'generic')==args.profile,'Configured scanner profile differs from --profile'
 installed_policy=installed_option('--bank-policy')
 assert (Path(installed_policy).resolve() if installed_policy is not None else None)==args.bank_policy,'Configured scanner policy differs from --bank-policy'
+installed_output=installed_option('--output')
+assert installed_output is not None and Path(installed_output).is_absolute(),'Configured scanner output must be an absolute directory'
 cmd=['codex','app-server','--stdio']
 for name in config.get('mcp_servers',{}):
     if name!='ai-guardrail-scanner':cmd+=['-c','mcp_servers.'+name+'.enabled=false']
@@ -93,7 +95,7 @@ def verify_policy(report):
 
 transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.6.0'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.7.0'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -106,7 +108,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==len({r['id'] for r in rules})==33
-    assert server['serverInfo']['version']=='0.6.0'
+    assert server['serverInfo']['version']=='0.7.0'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -119,18 +121,16 @@ try:
             assert time.monotonic()-t<150
         assert s['state']=='COMPLETED',s
         results={fmt:tool('guardrail_scan_result',{'scanId':scanid,'format':fmt}) for fmt in ['json','markdown','sarif']}
-        for fmt,r in results.items():
-            assert not r['contentOmitted'],(name,fmt)
-            assert Path(r['artifacts'][fmt]).read_text()==r['content']
-        report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
-        assert report['schemaVersion']=='1.5'
-        assert report['ruleSetVersion']=='java-python-guardrail-v7'
-        assert report['runtime']['scannerVersion']=='0.6.0'
+        documents={fmt:verified_report_content(r,fmt,s,installed_output,name) for fmt,r in results.items()}
+        report=json.loads(documents['json']);sarif=json.loads(documents['sarif'])
+        assert report['schemaVersion']=='1.6'
+        assert report['ruleSetVersion']=='java-python-guardrail-v8'
+        assert report['runtime']['scannerVersion']=='0.7.0'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         verify_policy(report)
         assert s['policy']==report['policy']
         assert s['gateDecision']==report['gateDecision']
-        verify_unknowns(report,s,sarif['runs'][0]['properties'],results['markdown']['content'],name)
+        verify_unknowns(report,s,sarif['runs'][0]['properties'],documents['markdown'],name)
         if args.require_python_parse_success:
             assert not any(d['code'] in ['PYTHON_PARSE_FAILED','PYTHON_PARSE_DEPTH',
                                         'PYTHON_ANALYSIS_LIMIT','BANK_PYTHON_PARSE_FAILED',

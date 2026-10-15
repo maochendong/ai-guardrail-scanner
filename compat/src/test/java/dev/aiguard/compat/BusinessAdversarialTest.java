@@ -9,13 +9,13 @@ import java.util.Map;
 import org.junit.Test;
 
 /** Actual syntax adapters feed the shared interpreter; synthetic APIs have no security keywords. */
-public class BankAdversarialTest {
+public class BusinessAdversarialTest {
   private static final Cancel NEVER =
       new Cancel() {
         public void check() {}
       };
 
-  private BankPolicy policy(boolean java, boolean accepted) throws Exception {
+  private BusinessPolicy policy(boolean java, boolean accepted) throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     String prefix = java ? "rivet.Port#" : "rivet.";
     String[] labels = {
@@ -79,11 +79,11 @@ public class BankAdversarialTest {
       if (scoped) sink.put("identity", 0);
       contracts.add(sink);
     }
-    return BankPolicy.parse(
+    return BusinessPolicy.parse(
         "bank-all", Json.COMPACT.toJson(Findings.map("version", 1, "contracts", contracts)));
   }
 
-  private BankAnalysis analyze(boolean java, String body, boolean accepted) throws Exception {
+  private BusinessAnalysis analyze(boolean java, String body, boolean accepted) throws Exception {
     String source =
         java
             ? "import rivet.Port; class Probe { void run(boolean flag) {"
@@ -92,9 +92,9 @@ public class BankAdversarialTest {
             : "import rivet\ndef run(flag):\n" + indent(body.replace("@", "rivet."));
     List<SourceFile> files =
         Arrays.asList(new SourceFile(java ? "Probe.java" : "probe.py", source));
-    BankFlow.Program program =
-        java ? BankJavaAnalysis.adapt(files, NEVER) : BankPythonAnalysis.adapt(files, NEVER);
-    return BankAnalysis.analyze(program, policy(java, accepted), NEVER);
+    BusinessFlow.Program program =
+        java ? BusinessJavaAnalysis.adapt(files, NEVER) : BusinessPythonAnalysis.adapt(files, NEVER);
+    return BusinessAnalysis.analyze(program, policy(java, accepted), NEVER);
   }
 
   private static String indent(String body) {
@@ -110,7 +110,7 @@ public class BankAdversarialTest {
   private void paired(String id, String python, String java, String expected, boolean accepted)
       throws Exception {
     for (boolean isJava : Arrays.asList(false, true)) {
-      BankAnalysis result = analyze(isJava, isJava ? java : python, accepted);
+      BusinessAnalysis result = analyze(isJava, isJava ? java : python, accepted);
       Map<String, Object> assessment = null;
       for (Map<String, Object> item : result.assessments)
         if (id.equals(item.get("ruleId"))) assessment = item;
@@ -129,25 +129,25 @@ public class BankAdversarialTest {
 
   @Test
   public void sensitiveEgressHasObservedViolatedAndUnknownCases() throws Exception {
-    paired(BankPolicy.DATA, "v=@s1()\n@t1(@r1(v))", "Object v=@s1();@t1(@r1(v));", "OBSERVED");
-    paired(BankPolicy.DATA, "v=@s1()\n@t1(v)", "Object v=@s1();@t1(v);", "VIOLATED");
-    paired(BankPolicy.DATA, "v=@other()\n@t1(v)", "Object v=@other();@t1(v);", "UNKNOWN");
+    paired(BusinessPolicy.DATA, "v=@s1()\n@t1(@r1(v))", "Object v=@s1();@t1(@r1(v));", "OBSERVED");
+    paired(BusinessPolicy.DATA, "v=@s1()\n@t1(v)", "Object v=@s1();@t1(v);", "VIOLATED");
+    paired(BusinessPolicy.DATA, "v=@other()\n@t1(v)", "Object v=@other();@t1(v);", "UNKNOWN");
   }
 
   @Test
   public void identityScopeHasObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@s2()\nv=@s5()\nif @c2(i,v):\n    @t2(i,v)",
         "Object i=@s2();Object v=@s5();if(@c2(i,v)){@t2(i,v);}",
         "OBSERVED");
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@s2()\nv=@s5()\n@t2(i,v)",
         "Object i=@s2();Object v=@s5();@t2(i,v);",
         "VIOLATED");
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@other()\nv=@s5()\nif @c2(i,v):\n    @t2(i,v)",
         "Object i=@other();Object v=@s5();if(@c2(i,v)){@t2(i,v);}",
         "UNKNOWN");
@@ -156,13 +156,13 @@ public class BankAdversarialTest {
   @Test
   public void outputGuardHasObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif @c1(v):\n    @t3(v)",
         "Object v=@s4();if(@c1(v)){@t3(v);}",
         "OBSERVED");
-    paired(BankPolicy.GUARD, "v=@s4()\n@t3(v)", "Object v=@s4();@t3(v);", "VIOLATED");
+    paired(BusinessPolicy.GUARD, "v=@s4()\n@t3(v)", "Object v=@s4();@t3(v);", "VIOLATED");
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@other()\nif @c1(v):\n    @t3(v)",
         "Object v=@other();if(@c1(v)){@t3(v);}",
         "UNKNOWN");
@@ -171,17 +171,17 @@ public class BankAdversarialTest {
   @Test
   public void customerFactsHaveObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.FACTS,
+        BusinessPolicy.FACTS,
         "i=@s2()\nv=@s6()\nif @c3(v):\n    @t4(i,v)",
         "Object i=@s2();Object v=@s6();if(@c3(v)){@t4(i,v);}",
         "OBSERVED");
     paired(
-        BankPolicy.FACTS,
+        BusinessPolicy.FACTS,
         "i=@s2()\nv=@s6()\n@t4(i,v)",
         "Object i=@s2();Object v=@s6();@t4(i,v);",
         "VIOLATED");
     paired(
-        BankPolicy.FACTS,
+        BusinessPolicy.FACTS,
         "i=@s2()\nv=@other()\n@t4(i,v)",
         "Object i=@s2();Object v=@other();@t4(i,v);",
         "UNKNOWN");
@@ -190,17 +190,17 @@ public class BankAdversarialTest {
   @Test
   public void customerSuitabilityHasObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.SUITABILITY,
+        BusinessPolicy.SUITABILITY,
         "i=@s2()\nv=@s6()\nif @c4(i,v):\n    @t4(i,v)",
         "Object i=@s2();Object v=@s6();if(@c4(i,v)){@t4(i,v);}",
         "OBSERVED");
     paired(
-        BankPolicy.SUITABILITY,
+        BusinessPolicy.SUITABILITY,
         "i=@s2()\nv=@s6()\n@t4(i,v)",
         "Object i=@s2();Object v=@s6();@t4(i,v);",
         "VIOLATED");
     paired(
-        BankPolicy.SUITABILITY,
+        BusinessPolicy.SUITABILITY,
         "i=@other()\nv=@s6()\n@t4(i,v)",
         "Object i=@other();Object v=@s6();@t4(i,v);",
         "UNKNOWN");
@@ -209,17 +209,17 @@ public class BankAdversarialTest {
   @Test
   public void documentAclHasObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.ACL,
+        BusinessPolicy.ACL,
         "i=@s2()\nv=@s5()\nif @c5(i,v):\n    @t5(i,v)",
         "Object i=@s2();Object v=@s5();if(@c5(i,v)){@t5(i,v);}",
         "OBSERVED");
     paired(
-        BankPolicy.ACL,
+        BusinessPolicy.ACL,
         "i=@s2()\nv=@s5()\n@t5(i,v)",
         "Object i=@s2();Object v=@s5();@t5(i,v);",
         "VIOLATED");
     paired(
-        BankPolicy.ACL,
+        BusinessPolicy.ACL,
         "i=@s2()\nv=@other()\n@t5(i,v)",
         "Object i=@s2();Object v=@other();@t5(i,v);",
         "UNKNOWN");
@@ -228,28 +228,28 @@ public class BankAdversarialTest {
   @Test
   public void toolCapabilityHasObservedViolatedAndUnknownCases() throws Exception {
     paired(
-        BankPolicy.CAPABILITY,
+        BusinessPolicy.CAPABILITY,
         "v=@s7()\nif @c6(v):\n    @t6(v)",
         "Object v=@s7();if(@c6(v)){@t6(v);}",
         "OBSERVED");
-    paired(BankPolicy.CAPABILITY, "v=@s7()\n@t6(v)", "Object v=@s7();@t6(v);", "VIOLATED");
-    paired(BankPolicy.CAPABILITY, "v=@other()\n@t6(v)", "Object v=@other();@t6(v);", "UNKNOWN");
+    paired(BusinessPolicy.CAPABILITY, "v=@s7()\n@t6(v)", "Object v=@s7();@t6(v);", "VIOLATED");
+    paired(BusinessPolicy.CAPABILITY, "v=@other()\n@t6(v)", "Object v=@other();@t6(v);", "UNKNOWN");
   }
 
   @Test
   public void renamingEverySecurityApiDoesNotChangeContractSemantics() throws Exception {
     String original = "import rivet\ndef run():\n    v=rivet.s1()\n    rivet.t1(v)\n";
-    BankPolicy declared = policy(false, true);
+    BusinessPolicy declared = policy(false, true);
     String json =
         "{\"version\":1,\"contracts\":[{\"symbol\":\"arbitrary.z19\",\"arity\":0,\"kind\":\"source\",\"label\":\"sensitive\"},{\"symbol\":\"arbitrary.q72\",\"arity\":1,\"kind\":\"sink\",\"channel\":\"egress\",\"args\":[0]}]}";
-    BankAnalysis before =
-        BankAnalysis.analyze(
-            BankPythonAnalysis.adapt(Arrays.asList(new SourceFile("a.py", original)), NEVER),
+    BusinessAnalysis before =
+        BusinessAnalysis.analyze(
+            BusinessPythonAnalysis.adapt(Arrays.asList(new SourceFile("a.py", original)), NEVER),
             declared,
             NEVER);
-    BankAnalysis after =
-        BankAnalysis.analyze(
-            BankPythonAnalysis.adapt(
+    BusinessAnalysis after =
+        BusinessAnalysis.analyze(
+            BusinessPythonAnalysis.adapt(
                 Arrays.asList(
                     new SourceFile(
                         "b.py",
@@ -258,7 +258,7 @@ public class BankAdversarialTest {
                             .replace("s1", "z19")
                             .replace("t1", "q72"))),
                 NEVER),
-            BankPolicy.parse("bank-all", json),
+            BusinessPolicy.parse("bank-all", json),
             NEVER);
     assertEquals(
         before.assessments.get(0).get("disposition"), after.assessments.get(0).get("disposition"));
@@ -268,7 +268,7 @@ public class BankAdversarialTest {
   @Test
   public void checkingOneValueCannotProtectAnotherValue() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nw=@s4()\nif @c1(v):\n    @t3(w)",
         "Object v=@s4();Object w=@s4();if(@c1(v)){@t3(w);}",
         "VIOLATED");
@@ -277,9 +277,9 @@ public class BankAdversarialTest {
   @Test
   public void discardedAndOverwrittenDecisionsDoNotAuthorizeRelease() throws Exception {
     paired(
-        BankPolicy.GUARD, "v=@s4()\n@c1(v)\n@t3(v)", "Object v=@s4();@c1(v);@t3(v);", "VIOLATED");
+        BusinessPolicy.GUARD, "v=@s4()\n@c1(v)\n@t3(v)", "Object v=@s4();@c1(v);@t3(v);", "VIOLATED");
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nok=@c1(v)\nok=True\nif ok:\n    @t3(v)",
         "Object v=@s4();boolean ok=@c1(v);ok=true;if(ok){@t3(v);}",
         "VIOLATED");
@@ -288,7 +288,7 @@ public class BankAdversarialTest {
   @Test
   public void reassignmentAfterAcceptedGuardInvalidatesThatValueBinding() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif not @c1(v):\n    return\nv=@s4()\n@t3(v)",
         "Object v=@s4();if(!@c1(v))return;v=@s4();@t3(v);",
         "VIOLATED");
@@ -297,12 +297,12 @@ public class BankAdversarialTest {
   @Test
   public void rejectedBranchMustStopBeforeUnconditionalRelease() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif not @c1(v):\n    return\n@t3(v)",
         "Object v=@s4();if(!@c1(v))return;@t3(v);",
         "OBSERVED");
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif not @c1(v):\n    pass\n@t3(v)",
         "Object v=@s4();if(!@c1(v)){}@t3(v);",
         "VIOLATED");
@@ -311,13 +311,13 @@ public class BankAdversarialTest {
   @Test
   public void falseAcceptingContractRequiresTheFalseBranch() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif @c1(v):\n    return\n@t3(v)",
         "Object v=@s4();if(@c1(v))return;@t3(v);",
         "OBSERVED",
         false);
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif @c1(v):\n    @t3(v)",
         "Object v=@s4();if(@c1(v)){@t3(v);}",
         "VIOLATED",
@@ -327,12 +327,12 @@ public class BankAdversarialTest {
   @Test
   public void booleanEqualityAndInequalityPreserveGuardPolarity() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif @c1(v) == True:\n    @t3(v)",
         "Object v=@s4();if(@c1(v)==true){@t3(v);}",
         "OBSERVED");
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif @c1(v) != True:\n    @t3(v)",
         "Object v=@s4();if(@c1(v)!=true){@t3(v);}",
         "VIOLATED");
@@ -341,12 +341,12 @@ public class BankAdversarialTest {
   @Test
   public void shortCircuitAndRequiresAcceptedGuardButOrCanBypassIt() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif flag and @c1(v):\n    @t3(v)",
         "Object v=@s4();if(flag&&@c1(v)){@t3(v);}",
         "OBSERVED");
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nif flag or @c1(v):\n    @t3(v)",
         "Object v=@s4();if(flag||@c1(v)){@t3(v);}",
         "VIOLATED");
@@ -355,7 +355,7 @@ public class BankAdversarialTest {
   @Test
   public void releaseBeforeGuardCannotBeRetroactivelyApproved() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\n@t3(v)\nif @c1(v):\n    return",
         "Object v=@s4();@t3(v);if(@c1(v))return;",
         "VIOLATED");
@@ -364,7 +364,7 @@ public class BankAdversarialTest {
   @Test
   public void catchFallbackReleasesAnUncheckedValue() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\n"
             + "try:\n"
             + "    if not @c1(v):\n"
@@ -379,7 +379,7 @@ public class BankAdversarialTest {
   @Test
   public void exceptionPathThatReturnsDoesNotReleaseFallback() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\ntry:\n    if not @c1(v):\n        return\nexcept Exception:\n    return\n@t3(v)",
         "Object v=@s4();try{if(!@c1(v))return;}catch(Exception e){return;}@t3(v);",
         "OBSERVED");
@@ -388,7 +388,7 @@ public class BankAdversarialTest {
   @Test
   public void finallyReleaseRunsEvenAfterGuardRejectReturn() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\ntry:\n    if not @c1(v):\n        return\nfinally:\n    @t3(v)",
         "Object v=@s4();try{if(!@c1(v))return;}finally{@t3(v);}",
         "VIOLATED");
@@ -397,7 +397,7 @@ public class BankAdversarialTest {
   @Test
   public void finallyReturnCanSuppressPostTryRelease() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\ntry:\n    pass\nfinally:\n    return\n@t3(v)",
         "Object v=@s4();try{}finally{return;}@t3(v);",
         "UNKNOWN");
@@ -405,9 +405,9 @@ public class BankAdversarialTest {
 
   @Test
   public void callingRedactorButSendingOriginalStillViolates() throws Exception {
-    paired(BankPolicy.DATA, "v=@s1()\n@r1(v)\n@t1(v)", "Object v=@s1();@r1(v);@t1(v);", "VIOLATED");
+    paired(BusinessPolicy.DATA, "v=@s1()\n@r1(v)\n@t1(v)", "Object v=@s1();@r1(v);@t1(v);", "VIOLATED");
     paired(
-        BankPolicy.DATA,
+        BusinessPolicy.DATA,
         "v=@s1()\nw=@r1(v)\n@t1(v)",
         "Object v=@s1();Object w=@r1(v);@t1(v);",
         "VIOLATED");
@@ -416,7 +416,7 @@ public class BankAdversarialTest {
   @Test
   public void redactedAndRawCompositeCannotBeTreatedAsFullyRedacted() throws Exception {
     paired(
-        BankPolicy.DATA,
+        BusinessPolicy.DATA,
         "v=@s1()\nw=@r1(v)\n@t1([w,v])",
         "Object v=@s1();Object w=@r1(v);@t1(new Object[]{w,v});",
         "UNKNOWN");
@@ -425,12 +425,12 @@ public class BankAdversarialTest {
   @Test
   public void requestIdentityIsNotTrustedEvenWhenScopeAcceptsIt() throws Exception {
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@s3()\nv=@s5()\nif @c2(i,v):\n    @t2(i,v)",
         "Object i=@s3();Object v=@s5();if(@c2(i,v)){@t2(i,v);}",
         "VIOLATED");
     paired(
-        BankPolicy.SUITABILITY,
+        BusinessPolicy.SUITABILITY,
         "i=@s3()\nv=@s6()\nif @c4(i,v):\n    @t4(i,v)",
         "Object i=@s3();Object v=@s6();if(@c4(i,v)){@t4(i,v);}",
         "VIOLATED");
@@ -439,7 +439,7 @@ public class BankAdversarialTest {
   @Test
   public void modelOrRequestReplacementCannotReuseTheTrustedIdentityProof() throws Exception {
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@s2()\nv=@s5()\nif not @c2(i,v):\n    return\ni=@s3()\n@t2(i,v)",
         "Object i=@s2();Object v=@s5();if(!@c2(i,v))return;i=@s3();@t2(i,v);",
         "VIOLATED");
@@ -448,7 +448,7 @@ public class BankAdversarialTest {
   @Test
   public void scopeArgumentsMustBindIdentityAndResourceInDeclaredOrder() throws Exception {
     paired(
-        BankPolicy.IAM,
+        BusinessPolicy.IAM,
         "i=@s2()\nv=@s5()\nif @c2(v,i):\n    @t2(i,v)",
         "Object i=@s2();Object v=@s5();if(@c2(v,i)){@t2(i,v);}",
         "VIOLATED");
@@ -457,7 +457,7 @@ public class BankAdversarialTest {
   @Test
   public void documentAclForOneResourceCannotCoverAnother() throws Exception {
     paired(
-        BankPolicy.ACL,
+        BusinessPolicy.ACL,
         "i=@s2()\nv=@s5()\nw=@s5()\nif @c5(i,v):\n    @t5(i,w)",
         "Object i=@s2();Object v=@s5();Object w=@s5();if(@c5(i,v)){@t5(i,w);}",
         "VIOLATED");
@@ -466,12 +466,12 @@ public class BankAdversarialTest {
   @Test
   public void factsAndSuitabilityRequireTheActualRecommendation() throws Exception {
     paired(
-        BankPolicy.FACTS,
+        BusinessPolicy.FACTS,
         "i=@s2()\nv=@s6()\nw=@s6()\nif @c3(v):\n    @t4(i,w)",
         "Object i=@s2();Object v=@s6();Object w=@s6();if(@c3(v)){@t4(i,w);}",
         "VIOLATED");
     paired(
-        BankPolicy.SUITABILITY,
+        BusinessPolicy.SUITABILITY,
         "i=@s2()\nv=@s6()\nw=@s6()\nif @c4(i,v):\n    @t4(i,w)",
         "Object i=@s2();Object v=@s6();Object w=@s6();if(@c4(i,v)){@t4(i,w);}",
         "VIOLATED");
@@ -480,7 +480,7 @@ public class BankAdversarialTest {
   @Test
   public void toolCapabilityCannotBeCheckedAgainstDifferentArguments() throws Exception {
     paired(
-        BankPolicy.CAPABILITY,
+        BusinessPolicy.CAPABILITY,
         "v=@s7()\nw=@s7()\nif @c6(v):\n    @t6(w)",
         "Object v=@s7();Object w=@s7();if(@c6(v)){@t6(w);}",
         "VIOLATED");
@@ -489,7 +489,7 @@ public class BankAdversarialTest {
   @Test
   public void localLoopsCannotCertifyWhetherAControlDominatesTheSink() throws Exception {
     paired(
-        BankPolicy.GUARD,
+        BusinessPolicy.GUARD,
         "v=@s4()\nwhile flag:\n    if not @c1(v):\n        return\n    break\n@t3(v)",
         "Object v=@s4();while(flag){if(!@c1(v))return;break;}@t3(v);",
         "UNKNOWN");
@@ -498,9 +498,9 @@ public class BankAdversarialTest {
   @Test
   public void sameSimpleApiNameInADifferentNamespaceDoesNotMatchTheContract() throws Exception {
     String source = "import unrelated\ndef run():\n    v=unrelated.s1()\n    unrelated.t1(v)\n";
-    BankAnalysis result =
-        BankAnalysis.analyze(
-            BankPythonAnalysis.adapt(Arrays.asList(new SourceFile("probe.py", source)), NEVER),
+    BusinessAnalysis result =
+        BusinessAnalysis.analyze(
+            BusinessPythonAnalysis.adapt(Arrays.asList(new SourceFile("probe.py", source)), NEVER),
             policy(false, true),
             NEVER);
     for (Map<String, Object> item : result.assessments)

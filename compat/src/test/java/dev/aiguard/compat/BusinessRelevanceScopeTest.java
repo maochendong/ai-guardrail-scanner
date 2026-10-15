@@ -10,13 +10,13 @@ import java.util.concurrent.CancellationException;
 import org.junit.Test;
 
 /** Structural relevance must be bounded independently from execution of a mapped path. */
-public class BankRelevanceScopeTest {
+public class BusinessRelevanceScopeTest {
   private static final Cancel NONE =
       new Cancel() {
         public void check() {}
       };
 
-  private BankPolicy policy() throws Exception {
+  private BusinessPolicy policy() throws Exception {
     List<Map<String, Object>> contracts = new ArrayList<Map<String, Object>>();
     contracts.add(
         Findings.map(
@@ -79,11 +79,11 @@ public class BankRelevanceScopeTest {
               Arrays.asList(1),
               "scope",
               "restricted"));
-    return BankPolicy.parse(
+    return BusinessPolicy.parse(
         "bank-all", Json.COMPACT.toJson(Findings.map("version", 2, "contracts", contracts)));
   }
 
-  private BankFlow.Program protectedProgram(BankPolicy policy) {
+  private BusinessFlow.Program protectedProgram(BusinessPolicy policy) {
     String source =
         "package sample;import scope.Port;class Protected {void guarded(){Object"
             + " value=Port.output();if(Port.guard(value))Port.release(value);}void"
@@ -92,15 +92,15 @@ public class BankRelevanceScopeTest {
             + " documents(){Object user=Port.identity();Object"
             + " resource=\"document\";if(Port.scope(user,resource)&&Port.document(user,resource))Port.retrieve(user,resource);}"
             + "}";
-    return BankJavaAnalysis.adapt(
+    return BusinessJavaAnalysis.adapt(
         Arrays.asList(new SourceFile("Protected.java", source)), NONE, policy);
   }
 
-  private BankFlow.Function deepHelper(int depth, boolean mappedRelease) {
-    BankFlow.Expr value = new BankFlow.Expr("LITERAL");
+  private BusinessFlow.Function deepHelper(int depth, boolean mappedRelease) {
+    BusinessFlow.Expr value = new BusinessFlow.Expr("LITERAL");
     value.literal = Boolean.TRUE;
     if (mappedRelease) {
-      BankFlow.Expr sink = new BankFlow.Expr("CALL");
+      BusinessFlow.Expr sink = new BusinessFlow.Expr("CALL");
       sink.symbol = "scope.Port#release";
       sink.path = "Deep.java";
       sink.line = 100;
@@ -109,33 +109,33 @@ public class BankRelevanceScopeTest {
       value = sink;
     }
     for (int i = 0; i < depth; i++) {
-      BankFlow.Expr parent = new BankFlow.Expr("UNARY");
+      BusinessFlow.Expr parent = new BusinessFlow.Expr("UNARY");
       parent.operator = "!";
       parent.args.add(value);
       value = parent;
     }
-    BankFlow.Stmt statement = new BankFlow.Stmt("EXPR");
+    BusinessFlow.Stmt statement = new BusinessFlow.Stmt("EXPR");
     statement.expr = value;
-    BankFlow.Function helper = new BankFlow.Function();
+    BusinessFlow.Function helper = new BusinessFlow.Function();
     helper.path = "Deep.java";
     helper.symbol = "sample.Deep#helper";
     helper.body.add(statement);
     return helper;
   }
 
-  private Map<String, Object> finding(BankAnalysis analysis, String rule) {
+  private Map<String, Object> finding(BusinessAnalysis analysis, String rule) {
     for (Map<String, Object> finding : analysis.assessments)
       if (rule.equals(finding.get("ruleId"))) return finding;
     throw new AssertionError("Missing assessment " + rule);
   }
 
-  private void disposition(BankAnalysis analysis, String rule, String expected) {
+  private void disposition(BusinessAnalysis analysis, String rule, String expected) {
     Map<String, Object> finding = finding(analysis, rule);
     assertEquals(finding.toString(), expected, finding.get("disposition"));
   }
 
   @SuppressWarnings("unchecked")
-  private boolean bounded(BankAnalysis analysis, String rule) {
+  private boolean bounded(BusinessAnalysis analysis, String rule) {
     Object reasons = finding(analysis, rule).get("unknownReasons");
     if (reasons == null) return false;
     for (Map<String, Object> reason : (List<Map<String, Object>>) reasons)
@@ -145,11 +145,11 @@ public class BankRelevanceScopeTest {
 
   @Test
   public void deepUnmappedHelperCannotDowngradeIndependentProtectedRules() throws Exception {
-    BankPolicy policy = policy();
-    BankFlow.Program program = protectedProgram(policy);
+    BusinessPolicy policy = policy();
+    BusinessFlow.Program program = protectedProgram(policy);
     program.functions.add(0, deepHelper(90, false));
-    BankAnalysis analysis = BankAnalysis.analyze(program, policy, NONE);
-    for (String rule : Arrays.asList(BankPolicy.GUARD, BankPolicy.IAM, BankPolicy.ACL)) {
+    BusinessAnalysis analysis = BusinessAnalysis.analyze(program, policy, NONE);
+    for (String rule : Arrays.asList(BusinessPolicy.GUARD, BusinessPolicy.IAM, BusinessPolicy.ACL)) {
       disposition(analysis, rule, "OBSERVED");
       assertFalse(bounded(analysis, rule));
     }
@@ -160,13 +160,13 @@ public class BankRelevanceScopeTest {
 
   @Test
   public void deepMappedSinkLimitsOnlyItsRelatedRule() throws Exception {
-    BankPolicy policy = policy();
-    BankFlow.Program program = protectedProgram(policy);
+    BusinessPolicy policy = policy();
+    BusinessFlow.Program program = protectedProgram(policy);
     program.functions.add(0, deepHelper(90, true));
-    BankAnalysis analysis = BankAnalysis.analyze(program, policy, NONE);
-    disposition(analysis, BankPolicy.GUARD, "UNKNOWN");
-    assertTrue(bounded(analysis, BankPolicy.GUARD));
-    for (String rule : Arrays.asList(BankPolicy.IAM, BankPolicy.ACL)) {
+    BusinessAnalysis analysis = BusinessAnalysis.analyze(program, policy, NONE);
+    disposition(analysis, BusinessPolicy.GUARD, "UNKNOWN");
+    assertTrue(bounded(analysis, BusinessPolicy.GUARD));
+    for (String rule : Arrays.asList(BusinessPolicy.IAM, BusinessPolicy.ACL)) {
       disposition(analysis, rule, "OBSERVED");
       assertFalse(bounded(analysis, rule));
     }
@@ -175,11 +175,11 @@ public class BankRelevanceScopeTest {
 
   @Test
   public void exhaustedStructuralInspectionRemainsConservative() throws Exception {
-    BankPolicy policy = policy();
-    BankFlow.Program program = protectedProgram(policy);
+    BusinessPolicy policy = policy();
+    BusinessFlow.Program program = protectedProgram(policy);
     program.functions.add(0, deepHelper(280, false));
-    BankAnalysis analysis = BankAnalysis.analyze(program, policy, NONE);
-    for (String rule : Arrays.asList(BankPolicy.GUARD, BankPolicy.IAM, BankPolicy.ACL)) {
+    BusinessAnalysis analysis = BusinessAnalysis.analyze(program, policy, NONE);
+    for (String rule : Arrays.asList(BusinessPolicy.GUARD, BusinessPolicy.IAM, BusinessPolicy.ACL)) {
       disposition(analysis, rule, "UNKNOWN");
       assertTrue(bounded(analysis, rule));
     }
@@ -187,7 +187,7 @@ public class BankRelevanceScopeTest {
 
   @Test
   public void cancellationDuringStructuralInspectionPropagatesUnchanged() throws Exception {
-    BankFlow.Program program = new BankFlow.Program();
+    BusinessFlow.Program program = new BusinessFlow.Program();
     program.functions.add(deepHelper(220, false));
     final CancellationException cancellation = new CancellationException("cancel relevance scan");
     Cancel cancel =
@@ -199,7 +199,7 @@ public class BankRelevanceScopeTest {
           }
         };
     try {
-      BankAnalysis.analyze(program, policy(), cancel);
+      BusinessAnalysis.analyze(program, policy(), cancel);
       fail("A deep structural precheck must remain cancellable even when no API is mapped");
     } catch (CancellationException actual) {
       assertSame(cancellation, actual);

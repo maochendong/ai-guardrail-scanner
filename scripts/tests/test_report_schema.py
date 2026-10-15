@@ -33,6 +33,8 @@ def fixture():
     assessment = {'ruleId': 'BANK-GUARD-001', 'disposition': 'VIOLATED', 'evidence': [],
                   'siteAssessments': [site], 'siteAssessmentsTruncated': False,
                   'controlReviewSites': [], 'controlReviewSitesTruncated': False,
+                  'callContextSites': [], 'callContextSitesTruncated': False,
+                  'streamTimingSites': [], 'streamTimingSitesTruncated': False,
                   'reviewActions': copy.deepcopy(actions), 'manualReviewRequired': True}
     counts = {'MISSING_MAPPING': 0, 'INSUFFICIENT_EVIDENCE': 0, 'UNSUPPORTED': 0}
     coverage = dict.fromkeys(['contractDefinitions', 'matchedDefinitions', 'matchedCallSites',
@@ -48,6 +50,7 @@ def fixture():
     exported['siteAssessments'][0].pop('symbol')
     properties = {'unknownSummary': copy.deepcopy(counts), 'unknownAssessments': 0,
                   'unknownAssessmentsDetails': [], 'reviewAssessmentsDetails': [exported],
+                  'contextAssessmentsDetails': [],
                   'mappingCoverage': copy.deepcopy(coverage)}
     markdown = '''# UNKNOWN 原因分类：缺少映射、证据不足、暂不支持
 ### BANK-GUARD-001 · Guard
@@ -73,12 +76,80 @@ def fixture():
     return report, state, properties, markdown
 
 
+def context_fixture():
+    report, state, properties, markdown = fixture()
+    parent = report['assessments'][0]
+    parent['callContextSites'] = [{'callPath': 'src/A & B.java', 'callLine': 3,
+                                 'calleePath': 'src/Service.java', 'calleeLine': 12,
+                                 'binding': 'candidate', 'parameterStates': ['trusted', 'unknown']}]
+    parent['streamTimingSites'] = [{'path': 'stream.py', 'line': 8, 'checkPath': 'stream.py',
+                                   'checkLine': 10, 'ordering': 'RELEASE_PRECEDES_MAPPED_CHECK',
+                                   'valueBinding': 'unknown', 'assurance': 'candidate',
+                                   'failureMode': 'open', 'limits': ['本地边界不等于网络送达。']}]
+    for field in ['callContextSites', 'streamTimingSites']:
+        properties['reviewAssessmentsDetails'][0][field] = copy.deepcopy(parent[field])
+    properties['contextAssessmentsDetails'] = copy.deepcopy(properties['reviewAssessmentsDetails'])
+    markdown += '\n调用上下文：src/A &#38; B.java 第 3 行 → src/Service.java 第 12 行；绑定：candidate；参数身份：[trusted, unknown]\n'
+    markdown += '\n首包时序：stream.py 第 8 行；检查：stream.py 第 10 行；顺序：RELEASE_PRECEDES_MAPPED_CHECK；值绑定：unknown；资格：candidate；失败语义：open\n'
+    markdown += '- 时序限制：本地边界不等于网络送达。\n'
+    return report, state, properties, markdown
+
+
 class ReportSchemaTest(unittest.TestCase):
     def verify(self, data):
         matrix.verify_unknowns(*data, context='fixture')
 
     def test_violation_parent_keeps_unknown_site_review(self):
         self.verify(fixture())
+
+    def test_context_and_timing_round_trip(self):
+        self.verify(context_fixture())
+
+    def test_missing_context_sarif_is_rejected(self):
+        data = context_fixture()
+        data[2]['contextAssessmentsDetails'] = []
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_candidate_check_cannot_claim_accepted_precheck(self):
+        data = context_fixture()
+        data[0]['assessments'][0]['streamTimingSites'][0]['ordering'] = 'ACCEPTED_CHECK_PRECEDES_RELEASE'
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_timing_missing_check_location_is_rejected(self):
+        data = context_fixture()
+        data[0]['assessments'][0]['streamTimingSites'][0]['checkLine'] = 0
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_context_unknown_identity_cannot_be_encoded_as_trusted_boolean(self):
+        data = context_fixture()
+        data[0]['assessments'][0]['callContextSites'][0]['parameterStates'][0] = True
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_missing_context_truncation_is_rejected(self):
+        for field in ['callContextSitesTruncated', 'streamTimingSitesTruncated']:
+            data = context_fixture()
+            del data[0]['assessments'][0][field]
+            with self.assertRaises(AssertionError):
+                self.verify(data)
+
+    def test_missing_markdown_context_or_timing_is_rejected(self):
+        for line in ['调用上下文：', '首包时序：', '- 时序限制：']:
+            report, state, properties, markdown = context_fixture()
+            markdown = '\n'.join(part for part in markdown.splitlines() if not part.startswith(line))
+            with self.assertRaises(AssertionError):
+                self.verify((report, state, properties, markdown))
+
+    def test_private_context_fields_are_not_sarif_metadata(self):
+        from report_schema import exported_detail
+        data = context_fixture()
+        parent = data[0]['assessments'][0]
+        for field in ['callContextSites', 'streamTimingSites']:
+            parent[field][0]['symbol'] = 'private.Type#method'
+            self.assertNotIn('symbol', exported_detail(parent)[field][0])
 
     def test_duplicate_rule_sections_are_consumed_in_assessment_order(self):
         report, state, properties, markdown = fixture()
@@ -277,7 +348,7 @@ class ReportSchemaTest(unittest.TestCase):
                                  for node in tree.body), name)
             values = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
                       and isinstance(node.value, str)}
-            self.assertTrue({'0.6.0', '1.5', 'java-python-guardrail-v7'} <= values, name)
+            self.assertTrue({'0.7.0', '1.6', 'java-python-guardrail-v8'} <= values, name)
             self.assertTrue({'0.5.1', '1.4', 'java-python-guardrail-v6'}.isdisjoint(values), name)
 
 

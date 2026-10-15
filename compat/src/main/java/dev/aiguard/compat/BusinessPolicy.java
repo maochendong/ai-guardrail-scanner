@@ -11,7 +11,7 @@ import java.security.MessageDigest;
 import java.util.*;
 
 /** Operator-owned semantic contracts, never read implicitly from a scanned repository. */
-public final class BankPolicy {
+public final class BusinessPolicy {
   public static final String DATA = "BANK-DATA-001",
       IAM = "BANK-IAM-001",
       GUARD = "BANK-GUARD-001",
@@ -236,7 +236,7 @@ public final class BankPolicy {
     }
   }
 
-  private BankPolicy(String profile, String json, Path source) throws IOException {
+  private BusinessPolicy(String profile, String json, Path source) throws IOException {
     if (!Arrays.asList("generic", "bank-common", "bank-customer", "bank-internal", "bank-all")
         .contains(profile)) throw invalid();
     if (json.getBytes(StandardCharsets.UTF_8).length > 65536) throw invalid();
@@ -301,7 +301,7 @@ public final class BankPolicy {
     }
   }
 
-  public static BankPolicy generic() {
+  public static BusinessPolicy generic() {
     try {
       return parse("generic", "{\"version\":1,\"contracts\":[]}");
     } catch (IOException error) {
@@ -309,11 +309,11 @@ public final class BankPolicy {
     }
   }
 
-  public static BankPolicy parse(String profile, String json) throws IOException {
-    return new BankPolicy(profile, json, null);
+  public static BusinessPolicy parse(String profile, String json) throws IOException {
+    return new BusinessPolicy(profile, json, null);
   }
 
-  public static BankPolicy load(String profile, Path file) throws IOException {
+  public static BusinessPolicy load(String profile, Path file) throws IOException {
     if (file == null) return parse(profile, "{\"version\":1,\"contracts\":[]}");
     Path path = file.toAbsolutePath().normalize();
     PathPolicy.rejectLinks(path);
@@ -339,7 +339,7 @@ public final class BankPolicy {
             .onUnmappableCharacter(CodingErrorAction.REPORT)
             .decode(ByteBuffer.wrap(out.toByteArray()))
             .toString();
-    return new BankPolicy(profile, json, path.toRealPath());
+    return new BusinessPolicy(profile, json, path.toRealPath());
   }
 
   public void checkRepository(Path root) throws IOException {
