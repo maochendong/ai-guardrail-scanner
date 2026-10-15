@@ -21,7 +21,7 @@ public final class Main {
   private static int run(String[] args) throws Exception {
     if (args.length == 0 || "--help".equals(args[0])) {
       System.out.println(
-          "AI Guardrail Scanner 0.5.0 (native Java 7+)\n"
+          "AI Guardrail Scanner 0.5.1 (native Java 7+)\n"
               + "  rules\n"
               + "  scan /absolute/repository --output /absolute/reports\n"
               + "  mcp --allow-root /absolute/root [--allow-root /another] --output"

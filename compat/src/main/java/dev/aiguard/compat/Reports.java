@@ -15,30 +15,93 @@ public final class Reports {
 
   public static Map<String, String> write(Map<String, Object> report, Path directory)
       throws IOException {
-    Path target = directory.toAbsolutePath().normalize();
-    PathPolicy.rejectLinks(target);
-    Files.createDirectories(target);
-    PathPolicy.rejectLinks(target);
-    try (DirectoryStream<Path> entries = Files.newDirectoryStream(target)) {
-      if (entries.iterator().hasNext()) throw new IOException("REPORT_DIRECTORY_NOT_EMPTY");
+    try (Prepared prepared = prepare(report, directory, new Cancel() {
+      public void check() {}
+    })) {
+      prepared.publish();
+      return prepared.documents;
     }
+  }
+
+  /** Prepare outside the task lock; only publish after cancellation and quota checks. */
+  static Prepared prepare(Map<String, Object> report, Path directory, Cancel cancel)
+      throws IOException {
+    cancel.check();
     Map<String, String> documents = new LinkedHashMap<String, String>();
     documents.put("json", Json.PRETTY.toJson(report) + "\n");
+    cancel.check();
     documents.put("markdown", markdown(report));
+    cancel.check();
     documents.put("sarif", Json.PRETTY.toJson(sarif(report)) + "\n");
-    for (Map.Entry<String, String> document : documents.entrySet()) {
-      byte[] bytes = document.getValue().getBytes(StandardCharsets.UTF_8);
-      if (bytes.length > 16 * 1024 * 1024) throw new IOException("REPORT_TOO_LARGE");
+    cancel.check();
+    Path target = directory.toAbsolutePath().normalize();
+    Path parent = target.getParent();
+    if (parent == null) throw new IOException("INVALID_REPORT_DIRECTORY");
+    PathPolicy.rejectLinks(target);
+    Files.createDirectories(parent);
+    PathPolicy.rejectLinks(target);
+    Prepared prepared =
+        new Prepared(target, Files.createTempDirectory(parent, ".guardrail-"), documents);
+    boolean ready = false;
+    try {
+      for (Map.Entry<String, String> document : documents.entrySet()) {
+        cancel.check();
+        byte[] bytes = document.getValue().getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 16 * 1024 * 1024) throw new IOException("REPORT_TOO_LARGE");
+        PathPolicy.rejectLinks(prepared.staging);
+        Files.write(
+            prepared.staging.resolve(fileName(document.getKey())),
+            bytes,
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE);
+        prepared.documentBytes.put(document.getKey(), bytes.length);
+        prepared.totalBytes += bytes.length;
+      }
+      cancel.check();
+      ready = true;
+      return prepared;
+    } finally {
+      if (!ready) prepared.close();
+    }
+  }
+
+  static final class Prepared implements AutoCloseable {
+    final Map<String, String> documents;
+    final Map<String, Integer> documentBytes = new LinkedHashMap<String, Integer>();
+    long totalBytes;
+    private final Path target, staging;
+
+    Prepared(Path target, Path staging, Map<String, String> documents) {
+      this.target = target;
+      this.staging = staging;
+      this.documents = Collections.unmodifiableMap(documents);
+    }
+
+    void publish() throws IOException {
       PathPolicy.rejectLinks(target);
-      Path temporary = Files.createTempFile(target, ".guardrail-", ".tmp");
-      try {
-        Files.write(temporary, bytes);
-        Files.createLink(target.resolve(fileName(document.getKey())), temporary);
-      } finally {
-        Files.deleteIfExists(temporary);
+      Files.createDirectories(target);
+      PathPolicy.rejectLinks(target);
+      try (DirectoryStream<Path> entries = Files.newDirectoryStream(target)) {
+        if (entries.iterator().hasNext()) throw new IOException("REPORT_DIRECTORY_NOT_EMPTY");
+      }
+      for (String format : documents.keySet()) {
+        PathPolicy.rejectLinks(target);
+        Path source = staging.resolve(fileName(format));
+        PathPolicy.rejectLinks(source);
+        // Unlike ATOMIC_MOVE, a hard link never replaces an existing destination.
+        Files.createLink(target.resolve(fileName(format)), source);
       }
     }
-    return Collections.unmodifiableMap(documents);
+
+    public void close() throws IOException {
+      // Only remove our known files; never traverse or recursively delete an unexpected entry.
+      for (String format : documents.keySet()) {
+        PathPolicy.rejectLinks(staging);
+        Files.deleteIfExists(staging.resolve(fileName(format)));
+      }
+      PathPolicy.rejectLinks(staging);
+      Files.deleteIfExists(staging);
+    }
   }
 
   public static String fileName(String format) {

@@ -1,10 +1,12 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.5.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.5.1 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
-银行模式通过启动参数 `--profile bank-common|bank-customer|bank-internal|bank-all` 选择，分别覆盖共性、客户服务/理财销售辅助、行内知识库/办公研发助手。使用外部操作员合同映射 API 后，追踪数据出站、可信身份、Guard 阻断、事实/适当性及文档/工具权限；缺少映射保留 `UNKNOWN`。配置、样例与限制见 [银行规则包](docs/banking-rules.md)，验收见 [0.4.0 银行验证](docs/banking-verification.md)。默认 `generic` 保留原有 26 条规则选择。0.5.0 支持 [真实 API 映射与 UNKNOWN 三类原因](docs/bank-semantic-mappings.md)，本轮验收见 [0.5.0 记录](docs/semantic-mappings-verification.md)。
+银行模式通过启动参数 `--profile bank-common|bank-customer|bank-internal|bank-all` 选择，分别覆盖共性、客户服务/理财销售辅助、行内知识库/办公研发助手。使用外部操作员合同映射 API 后，追踪数据出站、可信身份、Guard 阻断、事实/适当性及文档/工具权限；缺少映射保留 `UNKNOWN`。配置、样例与限制见 [银行规则包](docs/banking-rules.md)，验收见 [0.4.0 银行验证](docs/banking-verification.md)。默认 `generic` 保留原有 26 条规则选择。0.5.0 支持 [真实 API 映射与 UNKNOWN 三类原因](docs/bank-semantic-mappings.md)，对应验收见 [0.5.0 记录](docs/semantic-mappings-verification.md)。
 
 本项目是 MVP。报告中的 `OBSERVED` 只表示观察到控制或构造，不能解释为安全通过。未发现问题也不能证明防注入效果、鉴权正确性或生产防护有效性。
+
+0.5.1 修复 Python 局部诊断污染与 Java 初始化路径遗漏，补齐 MCP 错误恢复和取消发布一致性，并在单次扫描内复用语法解析。规则集版本为 `java-python-guardrail-v6`，报告结构保持 `1.4`，新增 `mappingCoverage.incompleteSourceFiles` 表示银行适配中被丢弃或未遍历完的源文件数量。发布验收见 [0.5.1 记录](docs/analysis-hardening-verification.md)。
 
 ## 构建与演示
 
@@ -19,6 +21,17 @@
 ```
 
 Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留 Java 21 参考实现及其回归测试，`./scripts/mvn.sh verify` 构建的是参考实现；Codex 应加载 `compat/` 的兼容产物。
+
+正式发布使用统一验收入口（操作员工具需要 Python 3.11+，扫描器不需要 Python）：
+
+```bash
+python3 scripts/verify-release.py \
+  --java7-home /absolute/jdk7 --java8-home /absolute/jdk8 \
+  --project /absolute/application --output /absolute/new-verification-directory \
+  --profile bank-all --bank-policy /absolute/operator-policy.json
+```
+
+可重复 `--project`。该入口执行真实 javac 7 的 `clean verify`、最终 JAR 的双 JVM 全量 JUnit 和 MCP 扫描；校验两种实际运行版本、三格式一致性、取消与错误恢复，并将制品 SHA256 和结果写入 `release-verification.json`。输出目录必须新建或为空。日常 `build-compatible.sh verify` 中 Maven/Surefire 使用构建 JVM，本身不代表双运行时发布验收；只传一个 JVM 的矩阵会被拒绝。
 
 将 `/absolute/application` 替换为待审计项目的绝对路径，报告根目录放在项目之外。两者不能相互包含。每次扫描产生独立扫描 ID 和目录，内含：
 
@@ -64,6 +77,8 @@ Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留
 
 每个 server 同时只执行一个扫描，保留最多 32 个任务，达到上限后拒绝新任务；每次扫描设置 120 秒协作式超时；内存中的报告正文总量最多 64 MiB，达到上限后返回 `SESSION_RESULT_LIMIT`，重新启动 server 可建立新会话。扫描 ID 与任务历史仅在当前进程会话内有效，不支持重启后恢复任务或继续查询旧 ID；成功导出的文件会持久保存。取消或失败不会冒充完成结果。
 
+完整单行的 JSON/UTF-8 解析错误与非法 RPC 包络返回错误响应后继续服务；超长帧仍终止会话。报告先写入私有暂存目录，再与任务状态一起确认发布：取消先被接受则不发布正式报告，发布完成后的取消返回 `COMPLETED`。磁盘发布失败仍可能留下部分正式文件，消费者必须检查任务状态。
+
 结果工具返回状态、格式、内容可信度提示和文件位置；内容超过 512 KiB 时设置 `contentOmitted`，省略内联正文，完整文件仍可在操作员指定的目录读取。调用方应检查该字段，不能把空正文解释为空报告。
 
 ## 如何解读报告
@@ -84,7 +99,7 @@ Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留
 ## 执行边界与数据处理
 
 - 扫描只读解析源码与配置，不运行目标的 Maven、Gradle、应用、注解处理器或项目脚本，不下载目标依赖。Maven XML 禁用 DTD 和外部实体，不执行 XML 中的构建或插件声明。
-- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.5.0 未实现。
+- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.5.1 未实现。
 - Java/Python 均使用固定版本的 ANTLR 语法解析，输入按 UTF-8 解码；解析失败或超预算的文件不使用部分语法结果。默认排除 `.git`、构建/依赖/工具目录、Python 虚拟环境与缓存，以及 Java/Python 测试目录；任意目录名只要具有 `pyvenv.cfg` 标记也按虚拟环境排除，`site-packages` 按依赖排除。排除项记录在 `EXCLUDED_SCOPE` 中。配置只选择 `pom.xml`、`build.gradle[.kts]`、`gradle.properties` 与 `application*.properties/yml/yaml`，其他 XML/YAML 不纳入当前配置规则。
 - 默认不跟随符号链接，并拒绝扫描范围逃逸和输入/输出目录重叠。单次最多清点 200,000 个目录条目、选择 10,000 个源码/配置文件，单文件 2 MiB、读取总量 32 MiB；预算耗尽或解析失败会留下诊断，不会计为通过。
 - 兼容实现使用不跟随链接的文件打开、路径、文件身份和修改信息校验，但不提供锚定目录读取或原子快照。每次记录 `FILESYSTEM_RACE_LIMITATION`，扫描期间源码树须保持稳定。
@@ -94,6 +109,8 @@ Java 8 运行时可直接用该 JAR，不需重新编译。仓库根模块保留
 - 报告目录必须新建或为空，不覆盖既有文件，不接受目录链中的符号链接。文件通过同文件系统硬链接原子发布，因此报告文件系统需要支持硬链接；不支持时导出失败。已发布文件不会被覆盖，失败可能留下部分文件，不能据此认定扫描完成。
 
 自定义网关规则使用类型、HTTP 协议和有限跨方法来源关系，应用类名及方法名不作为模型或安全控制的判据。调用图最多索引 30,000 个方法、100,000 个调用，每次分派最多 16 个候选，继承与成员查找最多 8 层。方法、调用、候选及总操作预算耗尽会留下诊断，无法解析的深度关系保留未知。接口和可覆写方法的候选关系不等于部署中的实际 Bean。模型返回、SSE 回调和工具分派分别追踪；普通 HTTP、JSON 解析、方法名带 Guard 或多传一个 user 参数均不能证明安全。
+
+Java 静态块、实例块与字段初始化按各自声明顺序分析，字段控制证明仅在所属初始化执行体内使用，不跨构造器、其他对象或静态/实例边界传播。接口常量等尚未建模位置的调用和初始化中的延迟 lambda 保留 UNKNOWN 候选。Python 局部不支持沿实际路径传播，不使无关函数的已确定违规消失；整文件被丢弃时另记覆盖缺口。Java/Python 的语法缓存只在单次扫描内使用，通用与银行分析各自保留独立状态和预算。
 
 这仍不是完整跨方法数据流，也没有完整分析 Spring Security `SecurityFilterChain`、方法安全及业务授权。源码与配置仅覆盖表中列出的模式。静态审计不能测量围栏抗攻击率，也不涵盖模型权重后门、在线鲁棒性或真实业务恢复效果；这些结论需要真实应用样例和运行时验证。
 

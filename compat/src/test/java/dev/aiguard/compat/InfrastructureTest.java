@@ -288,7 +288,7 @@ public class InfrastructureTest {
     String[] lines = new String(result.toByteArray(), StandardCharsets.UTF_8).trim().split("\n");
     assertEquals(3, lines.length);
     assertEquals(
-        "0.5.0",
+        "0.5.1",
         Json.parse(lines[0])
             .getAsJsonObject()
             .getAsJsonObject("result")
@@ -311,17 +311,55 @@ public class InfrastructureTest {
   }
 
   @Test
-  public void mcpRejectsMalformedAndOversizedFrames() throws Exception {
+  public void mcpRejectsOversizedFrames() throws Exception {
     Path root = folder("bad-mcp"), output = folder("bad-mcp-out");
-    byte[][] inputs = {"{bad}\n".getBytes(StandardCharsets.UTF_8), new byte[1024 * 1024 + 1]};
-    for (byte[] input : inputs) {
-      try {
-        new McpHost(new ScanService(Arrays.asList(root), output))
-            .run(new ByteArrayInputStream(input), new ByteArrayOutputStream());
-        fail();
-      } catch (IOException expected) {
-      }
+    try {
+      new McpHost(new ScanService(Arrays.asList(root), output))
+          .run(new ByteArrayInputStream(new byte[1024 * 1024 + 1]), new ByteArrayOutputStream());
+      fail();
+    } catch (IOException expected) {
+      assertEquals("MCP_FRAME_LIMIT", expected.getMessage());
     }
+  }
+
+  @Test
+  public void mcpRecoversFromParseAndEnvelopeErrorsWithoutLosingInitialization() throws Exception {
+    Path root = folder("recover-mcp"), output = folder("recover-mcp-out");
+    String initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n";
+    String[] invalid = {
+      "{bad}",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":42}",
+      "{\"jsonrpc\":\"1.0\",\"id\":2,\"method\":\"ping\"}",
+      "{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"ping\"}",
+      "{\"jsonrpc\":\"2.0\",\"id\":2}",
+      "[]"
+    };
+    ByteArrayOutputStream input = new ByteArrayOutputStream();
+    input.write(initialize.getBytes(StandardCharsets.UTF_8));
+    for (String frame : invalid) input.write((frame + "\n").getBytes(StandardCharsets.UTF_8));
+    input.write(new byte[] {(byte) 0xff, '\n'});
+    input.write(
+        ("{\"jsonrpc\":\"2.0\",\"method\":\"unknown-notification\"}\n"
+                + "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n")
+            .getBytes(StandardCharsets.UTF_8));
+    ByteArrayOutputStream outputBytes = new ByteArrayOutputStream();
+    new McpHost(new ScanService(Arrays.asList(root), output))
+        .run(new ByteArrayInputStream(input.toByteArray()), outputBytes);
+    String[] responses =
+        new String(outputBytes.toByteArray(), StandardCharsets.UTF_8).trim().split("\n");
+    assertEquals(9, responses.length);
+    for (int i = 1; i <= 7; i++) {
+      com.google.gson.JsonObject error = Json.parse(responses[i]).getAsJsonObject();
+      assertTrue(error.has("id"));
+      assertTrue(error.get("id").isJsonNull());
+      assertEquals(
+          i == 1 || i == 7 ? -32700 : -32600,
+          error.getAsJsonObject("error").get("code").getAsInt());
+    }
+    com.google.gson.JsonObject recovered = Json.parse(responses[8]).getAsJsonObject();
+    assertEquals(3, recovered.get("id").getAsInt());
+    assertEquals(5, recovered.getAsJsonObject("result").getAsJsonArray("tools").size());
   }
 
   private static Map<String, Object> waitFor(ScanService service, String id) throws Exception {

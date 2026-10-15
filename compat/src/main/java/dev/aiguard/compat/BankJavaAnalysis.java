@@ -35,10 +35,15 @@ public final class BankJavaAnalysis {
   }
 
   public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel, BankPolicy policy) {
+    return adapt(files, cancel, policy, new JavaSyntax.Cache());
+  }
+
+  public static BankFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BankPolicy policy, JavaSyntax.Cache syntax) {
     List<Unit> units = new ArrayList<Unit>();
     for (SourceFile file : files) {
       cancel.check();
-      if (file.path.endsWith(".java")) units.add(JavaSyntax.parse(file, cancel));
+      if (file.path.endsWith(".java")) units.add(syntax.parse(file, cancel));
     }
     return adapt(new JavaGraph(units, cancel), cancel);
   }
@@ -50,11 +55,13 @@ public final class BankJavaAnalysis {
   private BankFlow.Program run() {
     for (Unit unit : graph.units) {
       cancel.check();
-      if (unit.syntaxErrors > 0 || unit.root == null)
+      if (unit.syntaxErrors > 0 || unit.root == null) {
+        program.incompletePaths.add(unit.path);
         diagnostic(
             "BANK_JAVA_PARSE_INCOMPLETE",
             unit.path,
             "Java syntax is unavailable; banking controls in this file remain unknown.");
+      }
     }
     for (Method method : graph.methods()) {
       cancel.check();
@@ -71,6 +78,7 @@ public final class BankJavaAnalysis {
         if (method.rootNode == null) function.body.add(statement("UNKNOWN", method.node));
         else statements(method.rootNode, function.body, method, 0);
       } catch (Limit exhausted) {
+        incompleteFrom(method);
         function.body.clear();
         function.body.add(statement("UNKNOWN", method.node));
         diagnostic(
@@ -79,6 +87,7 @@ public final class BankJavaAnalysis {
             "Java banking adaptation reached its node or depth budget; remaining flow is unknown.");
         break;
       } catch (StackOverflowError exhausted) {
+        incompleteFrom(method);
         function.body.clear();
         function.body.add(statement("UNKNOWN", method.node));
         diagnostic(
@@ -89,12 +98,83 @@ public final class BankJavaAnalysis {
         break;
       }
     }
+    retainUnmodeledInitializationCalls();
     for (Map<String, Object> item : graph.diagnostics())
       diagnostic(
           "BANK_JAVA_BINDING_INCOMPLETE",
           String.valueOf(item.get("path")),
           "Java declaration binding is incomplete; ambiguous banking API symbols remain unknown.");
     return program;
+  }
+
+  private void incompleteFrom(Method first) {
+    boolean remainingMethods = false;
+    for (Method method : graph.methods()) {
+      if (method == first) remainingMethods = true;
+      if (remainingMethods) program.incompletePaths.add(method.node.unit.path);
+    }
+  }
+
+  /**
+   * Keep unsupported/deferred initialization calls visible without treating them as eager
+   * execution.
+   */
+  private void retainUnmodeledInitializationCalls() {
+    for (Unit unit : graph.units) {
+      try {
+        for (Node call : JavaSyntax.find(unit.root, null)) {
+          if (!call.kind.equals("CALL") && !call.kind.equals("NEW")) continue;
+          tick(0);
+          if (!unmodeledInitialization(call)) continue;
+          boolean nested = false;
+          for (Node parent = call.parent;
+              parent != null && parent.method == call.method;
+              parent = parent.parent)
+            if ((parent.kind.equals("CALL") || parent.kind.equals("NEW"))
+                && unmodeledInitialization(parent)) {
+              nested = true;
+              break;
+            }
+          if (nested) continue;
+          BankFlow.Function function = new BankFlow.Function();
+          function.path = unit.path;
+          function.line = call.line;
+          function.symbol =
+              (call.ownerType == null ? "" : call.ownerType.qualifiedName)
+                  + "#<unmodeled-init-"
+                  + call.start
+                  + ">";
+          BankFlow.Stmt unknown = statement("UNKNOWN", call);
+          unknown.expr = expression(call, 0);
+          function.body.add(unknown);
+          program.functions.add(function);
+        }
+      } catch (Limit exhausted) {
+        program.incompletePaths.add(unit.path);
+        diagnostic(
+            "BANK_JAVA_ADAPTER_LIMIT",
+            unit.path,
+            "Unmodeled initialization calls exceeded the adaptation budget; coverage is"
+                + " incomplete.");
+      } catch (StackOverflowError exhausted) {
+        program.incompletePaths.add(unit.path);
+        diagnostic(
+            "BANK_JAVA_ADAPTER_DEPTH",
+            unit.path,
+            "Unmodeled initialization calls exceeded supported nesting; coverage is incomplete.");
+      }
+    }
+  }
+
+  private boolean unmodeledInitialization(Node call) {
+    if (call.method == null) return true;
+    Method method = call.method;
+    if (method != method.owner.staticInitializer && method != method.owner.instanceInitializer)
+      return false;
+    for (Node parent = call.parent;
+        parent != null && parent.method == method;
+        parent = parent.parent) if (parent.kind.equals("LAMBDA")) return true;
+    return false;
   }
 
   private void tick(int depth) {
@@ -114,7 +194,7 @@ public final class BankJavaAnalysis {
       for (Node child : node.children) statements(child, out, method, depth + 1);
       return;
     }
-    if (node.kind.equals("VAR")) {
+    if (node.kind.equals("VAR") || node.kind.equals("FIELD") && node.decl == node) {
       BankFlow.Stmt result = statement("ASSIGN", node);
       result.target = key(node);
       result.expr = expression(node.initializer, depth + 1);
@@ -152,7 +232,7 @@ public final class BankJavaAnalysis {
     }
     if (node.kind.equals("ASSIGN")) {
       Node declaration = graph.declaration(node.receiver);
-      if (local(declaration) && node.args.size() == 2) {
+      if (tracked(declaration, node.receiver) && node.args.size() == 2) {
         BankFlow.Stmt result = statement("ASSIGN", node);
         result.target = key(declaration);
         result.expr = expression(node.initializer, depth + 1);
@@ -213,8 +293,8 @@ public final class BankJavaAnalysis {
       return expression(node.args.get(0), depth + 1);
     if (kind.equals("NAME")) {
       Node declaration = graph.declaration(node);
-      BankFlow.Expr result = expr(local(declaration) ? "NAME" : "UNKNOWN", node);
-      if (local(declaration)) result.name = key(declaration);
+      BankFlow.Expr result = expr(tracked(declaration, node) ? "NAME" : "UNKNOWN", node);
+      if (tracked(declaration, node)) result.name = key(declaration);
       return result;
     }
     if (kind.equals("CALL")) {
@@ -267,6 +347,12 @@ public final class BankJavaAnalysis {
       return result;
     }
     if (kind.equals("FIELD") && node.receiver != null && !node.name.equals("<unsupported>")) {
+      Node declaration = graph.declaration(node);
+      if (tracked(declaration, node)) {
+        BankFlow.Expr result = expr("NAME", node);
+        result.name = key(declaration);
+        return result;
+      }
       BankFlow.Expr result = expr("MEMBER", node);
       result.receiver = expression(node.receiver, depth + 1);
       result.name = node.name;
@@ -395,6 +481,26 @@ public final class BankJavaAnalysis {
 
   private static boolean local(Node node) {
     return node != null && (node.kind.equals("VAR") || node.kind.equals("PARAM"));
+  }
+
+  /**
+   * Only the current initialization sequence owns a field value; no object-wide proof is inferred.
+   */
+  private boolean tracked(Node declaration, Node use) {
+    if (local(declaration)) return true;
+    if (declaration == null
+        || !declaration.kind.equals("FIELD")
+        || use.method == null
+        || declaration.ownerType != use.method.owner) return false;
+    Method method = use.method;
+    boolean isStatic = declaration.modifiers.contains("static");
+    if (method != (isStatic ? method.owner.staticInitializer : method.owner.instanceInitializer))
+      return false;
+    if (use.kind.equals("NAME")) return true;
+    if (!use.kind.equals("FIELD") || use.receiver == null) return false;
+    return isStatic
+        ? typeReceiver(use.receiver)
+        : use.receiver.kind.equals("NAME") && use.receiver.name.equals("this");
   }
 
   private static String key(Node declaration) {

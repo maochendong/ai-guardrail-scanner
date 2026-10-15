@@ -2,6 +2,8 @@
 """Verify the configured scanner through Codex without starting a model turn."""
 from pathlib import Path
 import subprocess,json,threading,queue,time,tomllib,argparse,os
+if not __debug__:
+    raise RuntimeError('Verification requires assertions; disable -O and PYTHONOPTIMIZE.')
 parser=argparse.ArgumentParser(description='Verify an installed scanner through an actual ephemeral Codex app-server thread.')
 parser.add_argument('--project',type=Path,action='append',required=True)
 parser.add_argument('--output',type=Path,required=True)
@@ -18,6 +20,8 @@ if args.bank_policy is not None:
     assert args.bank_policy.is_file(),args.bank_policy
 ROOT=Path(__file__).resolve().parent.parent
 OUT=args.output.resolve()
+if OUT.exists() and any(OUT.iterdir()):
+    parser.error('--output must be new or empty so stale Codex evidence cannot be reused')
 OUT.mkdir(parents=True,exist_ok=True)
 config=tomllib.loads((Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))/'config.toml').read_text())
 installed_args=config.get('mcp_servers',{}).get('ai-guardrail-scanner',{}).get('args',[])
@@ -124,7 +128,7 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
     assert sarif_properties.get('mappingCoverage') == coverage, (context, 'SARIF mapping coverage differs')
     if report['policy']['profile'] != 'generic':
         for key in ['contractDefinitions', 'matchedDefinitions', 'matchedCallSites', 'matchedBoundarySites',
-                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions']:
+                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions', 'incompleteSourceFiles']:
             assert type(coverage.get(key)) is int and coverage[key] >= 0, (context, 'invalid mapping count', key, coverage)
         assert coverage['matchedDefinitions'] <= coverage['contractDefinitions'], (context, 'mapping definition counts', coverage)
         assert type(coverage.get('sourceDigestMatched')) is bool, (context, 'missing source binding result', coverage)
@@ -132,7 +136,7 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
 
 transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.5.0'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.5.1'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -145,7 +149,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==len({r['id'] for r in rules})==33
-    assert server['serverInfo']['version']=='0.5.0'
+    assert server['serverInfo']['version']=='0.5.1'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -163,8 +167,8 @@ try:
             assert Path(r['artifacts'][fmt]).read_text()==r['content']
         report=json.loads(results['json']['content']);sarif=json.loads(results['sarif']['content'])
         assert report['schemaVersion']=='1.4'
-        assert report['ruleSetVersion']=='java-python-guardrail-v5'
-        assert report['runtime']['scannerVersion']=='0.5.0'
+        assert report['ruleSetVersion']=='java-python-guardrail-v6'
+        assert report['runtime']['scannerVersion']=='0.5.1'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         verify_policy(report)
         assert s['policy']==report['policy']

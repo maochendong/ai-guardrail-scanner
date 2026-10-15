@@ -1,7 +1,6 @@
 package dev.aiguard.compat;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
@@ -27,6 +26,7 @@ public final class ScanService implements AutoCloseable {
     String state = "RUNNING", error = "";
     Map<String, Object> report;
     Map<String, String> documents = Collections.emptyMap();
+    Map<String, Integer> documentBytes = Collections.emptyMap();
   }
 
   public ScanService(List<Path> roots, Path output) throws IOException {
@@ -99,22 +99,26 @@ public final class ScanService implements AutoCloseable {
         if (!"RUNNING".equals(job.state)) return;
         stop.check();
       }
-      Map<String, String> documents = Reports.write(report, policy.output().resolve(job.id));
-      long documentBytes = 0;
-      for (String document : documents.values())
-        documentBytes += document.getBytes(StandardCharsets.UTF_8).length;
-      synchronized (this) {
-        if (!"RUNNING".equals(job.state)) return;
-        if (documentBytes > MAX_CACHED_DOCUMENT_BYTES - cachedDocumentBytes) {
-          job.state = "FAILED";
-          job.error = "SESSION_RESULT_LIMIT";
-          return;
+      try (Reports.Prepared prepared =
+          Reports.prepare(report, policy.output().resolve(job.id), stop)) {
+        synchronized (this) {
+          if (!"RUNNING".equals(job.state)) return;
+          stop.check();
+          if (prepared.totalBytes > MAX_CACHED_DOCUMENT_BYTES - cachedDocumentBytes) {
+            job.state = "FAILED";
+            job.error = "SESSION_RESULT_LIMIT";
+            return;
+          }
+          // Cancellation and publication share one commit point. The expensive work is staged.
+          prepared.publish();
+          job.report = report;
+          job.documents = prepared.documents;
+          job.documentBytes = prepared.documentBytes;
+          job.state = "COMPLETED";
+          cachedDocumentBytes += prepared.totalBytes;
+          // A following scan may queue while this worker only cleans its private staging files.
+          busy = false;
         }
-        stop.check();
-        job.report = report;
-        job.documents = documents;
-        job.state = "COMPLETED";
-        cachedDocumentBytes += documentBytes;
       }
     } catch (CancellationException error) {
       synchronized (this) {
@@ -133,7 +137,8 @@ public final class ScanService implements AutoCloseable {
           job.state = "FAILED";
           job.error = "SCAN_FAILED";
         }
-        busy = false;
+        // A completed job already released its slot; do not clear a newer queued job's slot.
+        if (!"COMPLETED".equals(job.state)) busy = false;
       }
     }
   }
@@ -192,7 +197,7 @@ public final class ScanService implements AutoCloseable {
     Job job = get(id);
     if (!"COMPLETED".equals(job.state)) throw new IllegalStateException("RESULT_NOT_AVAILABLE");
     String content = job.documents.get(format);
-    boolean omitted = content.getBytes(StandardCharsets.UTF_8).length > 512 * 1024;
+    boolean omitted = job.documentBytes.get(format).intValue() > 512 * 1024;
     Map<String, Object> artifacts = new LinkedHashMap<String, Object>();
     for (String name : Arrays.asList("json", "markdown", "sarif"))
       artifacts.put(name, policy.output().resolve(id).resolve(Reports.fileName(name)).toString());

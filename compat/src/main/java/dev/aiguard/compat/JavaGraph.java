@@ -31,8 +31,8 @@ public final class JavaGraph {
   private final Map<Method, List<Node>> incoming = new IdentityHashMap<Method, List<Node>>();
   private final Set<Node> resolving =
       Collections.newSetFromMap(new IdentityHashMap<Node, Boolean>());
-  private final Set<Method> indexed =
-      Collections.newSetFromMap(new IdentityHashMap<Method, Boolean>());
+  private final Map<Type, Map<String, List<Method>>> methodsBySignature =
+      new IdentityHashMap<Type, Map<String, List<Method>>>();
   private final Set<String> diagnosticKeys = new HashSet<String>();
   private int operations = 2000000;
   private static final Set<String> PRIMITIVES =
@@ -122,7 +122,15 @@ public final class JavaGraph {
         }
         methods.add(method);
       }
-    indexed.addAll(methods);
+    for (Method method : methods) {
+      cancel.check();
+      Map<String, List<Method>> signatures = methodsBySignature.get(method.owner);
+      if (signatures == null) {
+        signatures = new HashMap<String, List<Method>>();
+        methodsBySignature.put(method.owner, signatures);
+      }
+      list(signatures, method.name + "/" + method.params.size()).add(method);
+    }
     int calls = 0;
     outer:
     for (Method method : methods)
@@ -420,6 +428,7 @@ public final class JavaGraph {
       if (known.size() != 1) return remember(call, unknown(call, "DUPLICATE_TYPE"));
       Type direct = known.get(0);
       List<Method> base = select(direct, call, new HashSet<String>(), 0);
+      if (operations < 0) return remember(call, unknown(call, "UNSUPPORTED_OR_LIMIT"));
       if (base.size() > 16) {
         diagnostic(
             "CALL_GRAPH_TARGET_LIMIT",
@@ -455,6 +464,7 @@ public final class JavaGraph {
             List<Type> defs = types.get(subtype);
             if (defs != null && defs.size() == 1)
               targets.addAll(select(defs.get(0), call, new HashSet<String>(), 0));
+            if (operations < 0) return remember(call, unknown(call, "UNSUPPORTED_OR_LIMIT"));
             if (targets.size() > 16) {
               diagnostic(
                   "CALL_GRAPH_TARGET_LIMIT",
@@ -489,16 +499,18 @@ public final class JavaGraph {
     List<Method> result = new ArrayList<Method>();
     if (depth > 8 || !seen.add(owner.qualifiedName) || !tick(call)) return result;
     int best = -1;
-    for (Method method : owner.methods) {
-      cancel.check();
-      if (!indexed.contains(method)
-          || !method.name.equals(call.name)
-          || method.params.size() != call.args.size()) continue;
+    Map<String, List<Method>> signatures = methodsBySignature.get(owner);
+    List<Method> candidates =
+        signatures == null ? null : signatures.get(call.name + "/" + call.args.size());
+    if (candidates == null) candidates = Collections.emptyList();
+    for (Method method : candidates) {
+      if (!tick(call)) return Collections.emptyList();
       int score = 0;
       boolean incompatible = false;
       for (int i = 0; i < method.params.size(); i++) {
         String expected = qualifiedType(method.node, method.params.get(i).type),
             actual = type(call.args.get(i), 1);
+        if (operations < 0) return Collections.emptyList();
         if (expected.length() == 0 || actual.length() == 0 || actual.equals("null")) continue;
         if (expected.equals(actual)) score += 2;
         else if (expected.equals("java.lang.Object")

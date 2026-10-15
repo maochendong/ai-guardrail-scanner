@@ -10,6 +10,21 @@ import org.antlr.v4.runtime.tree.ParseTree;
 public final class JavaSyntax {
   private JavaSyntax() {}
 
+  /** One scan's immutable source snapshots share syntax, never graph or rule-engine budgets. */
+  public static final class Cache {
+    private final Map<SourceFile, Unit> units = new IdentityHashMap<SourceFile, Unit>();
+
+    public Unit parse(SourceFile file, Cancel cancel) {
+      cancel.check();
+      Unit unit = units.get(file);
+      if (unit == null) {
+        unit = JavaSyntax.parse(file, cancel);
+        units.put(file, unit);
+      }
+      return unit;
+    }
+  }
+
   public static final class Unit {
     public final String path, packageName;
     public Node root;
@@ -95,6 +110,7 @@ public final class JavaSyntax {
     public final List<Node> fields = new ArrayList<Node>();
     public final List<Param> recordComponents = new ArrayList<Param>();
     public final List<Method> methods = new ArrayList<Method>();
+    public Method staticInitializer, instanceInitializer;
     public final Set<String> modifiers = new LinkedHashSet<String>(),
         annotations = new LinkedHashSet<String>();
 
@@ -353,6 +369,13 @@ public final class JavaSyntax {
           || r.equals("constructorDeclaration")
           || r.equals("compactConstructorDeclaration"))
         return method(context, parent, owner, depth);
+      if (r.equals("classBodyDeclaration") && owner != null && method == null) {
+        ParserRuleContext block = child(context, "block");
+        if (block != null) {
+          Method initialization = initializer(owner, context, direct(context, "static"));
+          return build(block, initialization.rootNode, owner, initialization, depth + 1);
+        }
+      }
       if (r.equals("fieldDeclaration")
           || r.equals("localVariableDeclaration")
           || r.equals("resource")
@@ -483,6 +506,25 @@ public final class JavaSyntax {
       return n;
     }
 
+    Method initializer(Type owner, ParserRuleContext context, boolean isStatic) {
+      Method existing = isStatic ? owner.staticInitializer : owner.instanceInitializer;
+      if (existing != null) return existing;
+      Node n = node("METHOD", context, owner, null);
+      n.name = isStatic ? "<clinit>" : "<instance-init>";
+      Method initialization = new Method(owner, n.name, "void", n);
+      n.method = initialization;
+      if (isStatic) {
+        initialization.modifiers.add("static");
+        owner.staticInitializer = initialization;
+      } else owner.instanceInitializer = initialization;
+      initialization.rootNode = node("BLOCK", context, owner, initialization);
+      attach(n, initialization.rootNode);
+      attach(owner.node, n);
+      unit.methods.add(initialization);
+      owner.methods.add(initialization);
+      return initialization;
+    }
+
     Node parameter(ParserRuleContext context, Type owner, Method method) {
       Node n = node("PARAM", context, owner, method);
       n.type = text(context, "typeType");
@@ -510,26 +552,33 @@ public final class JavaSyntax {
         n.name = name;
         n.type = type;
         n.decl = n;
-        attach(parent, n);
         if (id != null && id.getText().endsWith("[]")) n.type += "[]";
         ParserRuleContext init = child(declaration, "variableInitializer");
         ParserRuleContext value =
             init == null ? child(declaration, "expression") : child(init, "expression");
-        if (value != null && rule(context).equals("enhancedForControl")) {
-          n.collection = expr(value, owner, method, depth + 1);
-          attach(n, n.collection);
-        } else if (value != null) {
-          n.initializer = expr(value, owner, method, depth + 1);
-          attach(n, n.initializer);
-        } else if (init != null) {
-          Node unknown = node("UNKNOWN", init, owner, method);
-          attach(n, unknown);
-          populate(init, unknown, owner, method, depth + 1);
-          n.initializer = unknown;
-        }
+        Method execution = method;
+        Node container = parent;
         if (kind.equals("FIELD") && owner != null) {
           owner.fields.add(n);
           modifiers(context, n.modifiers, n.annotations);
+          if (init != null || value != null) {
+            execution = initializer(owner, declaration, n.modifiers.contains("static"));
+            container = execution.rootNode;
+            n.method = execution;
+          }
+        }
+        attach(container, n);
+        if (value != null && rule(context).equals("enhancedForControl")) {
+          n.collection = expr(value, owner, execution, depth + 1);
+          attach(n, n.collection);
+        } else if (value != null) {
+          n.initializer = expr(value, owner, execution, depth + 1);
+          attach(n, n.initializer);
+        } else if (init != null) {
+          Node unknown = node("UNKNOWN", init, owner, execution);
+          attach(n, unknown);
+          populate(init, unknown, owner, execution, depth + 1);
+          n.initializer = unknown;
         }
       }
     }

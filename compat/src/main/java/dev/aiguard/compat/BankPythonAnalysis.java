@@ -1,7 +1,5 @@
 package dev.aiguard.compat;
 
-import dev.aiguard.compat.pygrammar.Python3Lexer;
-import dev.aiguard.compat.pygrammar.Python3Parser;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -9,13 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
-import org.antlr.v4.runtime.RecognitionException;
-import org.antlr.v4.runtime.Recognizer;
-import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /** Conservative Python syntax adapter; it never imports or executes the inspected application. */
@@ -27,10 +19,15 @@ public final class BankPythonAnalysis {
   }
 
   public static BankFlow.Program adapt(List<SourceFile> files, Cancel cancel, BankPolicy policy) {
+    return adapt(files, cancel, policy, new PythonSyntax.Cache());
+  }
+
+  public static BankFlow.Program adapt(
+      List<SourceFile> files, Cancel cancel, BankPolicy policy, PythonSyntax.Cache syntax) {
     BankFlow.Program program = new BankFlow.Program();
     for (SourceFile file : files) {
       cancel.check();
-      new Adapter(file, cancel, program, policy).parse();
+      new Adapter(file, cancel, program, policy).parse(syntax.parse(file, cancel));
     }
     return program;
   }
@@ -71,56 +68,13 @@ public final class BankPythonAnalysis {
       if (depth > 160 || ++visits > 300000) throw new Limit();
     }
 
-    void parse() {
-      final boolean[] failed = {false};
-      BaseErrorListener errors =
-          new BaseErrorListener() {
-            @Override
-            public void syntaxError(
-                Recognizer<?, ?> r,
-                Object symbol,
-                int line,
-                int column,
-                String message,
-                RecognitionException exception) {
-              failed[0] = true;
-            }
-          };
+    void parse(PythonSyntax.Unit syntax) {
+      if (syntax.tree == null) {
+        parseFailure(syntax.failureReason);
+        return;
+      }
       try {
-        Python3Lexer lexer =
-            new Python3Lexer(CharStreams.fromString(file.content)) {
-              int count;
-
-              @Override
-              public Token nextToken() {
-                if ((++count & 255) == 0) cancel.check();
-                if (count > 150000) throw new Limit();
-                return super.nextToken();
-              }
-            };
-        lexer.removeErrorListeners();
-        lexer.addErrorListener(errors);
-        CommonTokenStream tokens =
-            new CommonTokenStream(lexer) {
-              int reads;
-
-              @Override
-              public Token LT(int lookahead) {
-                if ((++reads & 1023) == 0) cancel.check();
-                if (reads > 5000000) throw new Limit();
-                return super.LT(lookahead);
-              }
-            };
-        Python3Parser parser = new Python3Parser(tokens);
-        parser.removeErrorListeners();
-        parser.addErrorListener(errors);
-        ParserRuleContext tree = parser.file_input();
-        if (failed[0]) {
-          diagnostic(
-              "BANK_PYTHON_PARSE_FAILED",
-              "Python syntax failed; bank flow for this file was discarded.");
-          return;
-        }
+        ParserRuleContext tree = syntax.tree;
         Scope module = scope(tree, null, null);
         BankFlow.Function top = function(moduleName(file.path) + ".<module>", tree);
         statements(tree, module, top.body, 0);
@@ -132,18 +86,33 @@ public final class BankPythonAnalysis {
               "BANK_PYTHON_UNSUPPORTED_FLOW",
               "Unsupported Python flow or dynamic binding remains unknown in the bank adapter.");
       } catch (Limit limit) {
-        diagnostic(
-            "BANK_PYTHON_ANALYSIS_LIMIT",
-            "Python bank flow exceeded its bounded analysis budget; this file was discarded.");
+        parseFailure("LIMIT");
       } catch (StackOverflowError error) {
-        diagnostic(
-            "BANK_PYTHON_ANALYSIS_DEPTH",
-            "Python bank flow exceeded supported nesting; this file was discarded.");
+        parseFailure("DEPTH");
       }
     }
 
+    void parseFailure(String reason) {
+      program.incompletePaths.add(file.path);
+      if ("SYNTAX".equals(reason))
+        diagnostic(
+            "BANK_PYTHON_PARSE_FAILED", "Python syntax failed; bank flow for this file was discarded.");
+      else if ("LIMIT".equals(reason))
+        diagnostic(
+            "BANK_PYTHON_ANALYSIS_LIMIT",
+            "Python bank flow exceeded its bounded analysis budget; this file was discarded.");
+      else
+        diagnostic(
+            "BANK_PYTHON_ANALYSIS_DEPTH",
+            "Python bank flow exceeded supported nesting; this file was discarded.");
+    }
+
     void diagnostic(String code, String message) {
-      program.diagnostics.add(Findings.diagnostic(code, file.path, message));
+      Map<String, Object> diagnostic = Findings.diagnostic(code, file.path, message);
+      // Unknown statements, expressions and calls already carry uncertainty in the IR.
+      // Their summary must not invalidate independent functions in this source file.
+      if ("BANK_PYTHON_UNSUPPORTED_FLOW".equals(code)) diagnostic.put("flowScope", "local");
+      program.diagnostics.add(diagnostic);
     }
 
     BankFlow.Function function(String symbol, ParserRuleContext node) {

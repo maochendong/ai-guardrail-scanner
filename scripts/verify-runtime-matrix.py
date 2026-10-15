@@ -5,10 +5,34 @@ import hashlib
 import json
 from pathlib import Path
 import queue
+import re
+import shutil
 import subprocess
 import threading
 import time
 import zipfile
+
+
+def validate_runtimes(commands):
+    """Require two real, distinct native runtimes before creating any matrix output."""
+    if len(commands) != 2:
+        raise ValueError('A Java 7/8 matrix requires exactly two --java executables.')
+    executables = [str(Path(shutil.which(str(command)) or command).resolve()) for command in commands]
+    if len(set(executables)) != 2:
+        raise ValueError('Duplicate JVM executable; both Java 7 and Java 8 are required.')
+    result = []
+    for java in executables:
+        version = subprocess.run([java, '-version'], text=True, capture_output=True,
+                                 check=True, timeout=15)
+        output = version.stdout + version.stderr
+        matched = re.search(r'(?:java|openjdk) version "(1\.[78]\.[^"\s]+)"', output)
+        if matched is None:
+            raise ValueError('Expected an actual Java 7 or Java 8 runtime: ' + java)
+        value = matched.group(1)
+        result.append({'java': java, 'version': value, 'major': value[:3], 'versionOutput': output})
+    if {row['major'] for row in result} != {'1.7', '1.8'}:
+        raise ValueError('Runtime versions must cover both Java 7 and Java 8.')
+    return result
 
 
 class Client:
@@ -53,10 +77,10 @@ class Client:
 
     def initialize(self):
         value = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.5.0'}})
+                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.5.1'}})
         self.process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         self.process.stdin.flush()
-        assert value['serverInfo']['version'] == '0.5.0'
+        assert value['serverInfo']['version'] == '0.5.1'
         return value
 
     def close(self):
@@ -145,13 +169,15 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
     assert sarif_properties.get('mappingCoverage') == coverage, (context, 'SARIF mapping coverage differs')
     if report['policy']['profile'] != 'generic':
         for key in ['contractDefinitions', 'matchedDefinitions', 'matchedCallSites', 'matchedBoundarySites',
-                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions']:
+                    'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions', 'incompleteSourceFiles']:
             assert type(coverage.get(key)) is int and coverage[key] >= 0, (context, 'invalid mapping count', key, coverage)
         assert coverage['matchedDefinitions'] <= coverage['contractDefinitions'], (context, 'mapping definition counts', coverage)
         assert type(coverage.get('sourceDigestMatched')) is bool, (context, 'missing source binding result', coverage)
 
 
 def main():
+    if not __debug__:
+        raise RuntimeError('Verification requires assertions; disable -O and PYTHONOPTIMIZE.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--java', action='append', required=True)
     parser.add_argument('--jar', type=Path, required=True)
@@ -165,7 +191,13 @@ def main():
     parser.add_argument('--require-resolved-python-clients', action='store_true')
     parser.add_argument('--expect-python-guard-results', action='store_true')
     args = parser.parse_args()
+    try:
+        runtimes = validate_runtimes(args.java)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        parser.error(str(error))
     args.output = args.output.resolve()
+    if args.output.exists() and any(args.output.iterdir()):
+        parser.error('--output must be new or empty so stale matrix evidence cannot be reused')
     if args.bank_policy is not None:
         args.bank_policy = args.bank_policy.resolve()
         assert args.bank_policy.is_file(), args.bank_policy
@@ -186,16 +218,17 @@ def main():
                 assert major <= 51, (name, major)
                 classes.append(major)
     summary = {'jar': str(args.jar.resolve()), 'sha256': hashlib.sha256(args.jar.read_bytes()).hexdigest(),
-               'classCount': len(classes), 'maxClassMajor': max(classes), 'profile': args.profile, 'runtimes': []}
+               'classCount': len(classes), 'maxClassMajor': max(classes), 'profile': args.profile,
+               'requiredRuntimeMajors': ['1.7', '1.8'], 'verifiedRuntimeMajors': [], 'runtimes': []}
     reference = {}
-    for index, java in enumerate(args.java):
+    for index, runtime in enumerate(runtimes):
+        java = runtime['java']
         runtime_output = args.output / ('runtime-' + str(index + 1))
         runtime_output.mkdir(exist_ok=True)
-        version = subprocess.run([java, '-version'], text=True, capture_output=True, check=True)
-        version_text = version.stdout + version.stderr
+        version_text = runtime['versionOutput']
         client = Client(java, args.jar.resolve(), args.project + [cancellation_fixture],
                         runtime_output / 'reports', args.profile, args.bank_policy)
-        row = {'java': java, 'versionOutput': version_text, 'command': client.command, 'projects': []}
+        row = dict(runtime, command=client.command, projects=[])
         try:
             row['initialize'] = client.initialize()
             assert len(client.rpc('tools/list')['tools']) == 5
@@ -233,8 +266,8 @@ def main():
                 assert state['policy'] == report['policy']
                 assert state['gateDecision'] == report['gateDecision']
                 verify_unknowns(report, state, sarif['properties'], formats['markdown']['content'], str(project))
-                assert report['runtime']['scannerVersion'] == '0.5.0'
-                assert report['ruleSetVersion'] == 'java-python-guardrail-v5'
+                assert report['runtime']['scannerVersion'] == '0.5.1'
+                assert report['ruleSetVersion'] == 'java-python-guardrail-v6'
                 if args.require_python_parse_success:
                     assert not any(d['code'] in ['PYTHON_PARSE_FAILED', 'PYTHON_PARSE_DEPTH',
                                                  'PYTHON_ANALYSIS_LIMIT', 'BANK_PYTHON_PARSE_FAILED',
@@ -296,13 +329,30 @@ def main():
             row['stderr'] = client.close()
             summary['runtimes'].append(row)
             (args.output / 'runtime-matrix.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
-        for malformed in [b'{invalid}\n', b'x' * (1024 * 1024 + 1)]:
-            process = subprocess.Popen(client.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate(malformed, timeout=10)
-            assert process.returncode != 0
-            assert not stdout, 'Malformed frame caused non-protocol output'
-        row['malformedAndOversizeFramesRejected'] = True
+        assert not (runtime_output / 'reports' / cancelling['scanId']).exists(), 'Cancelled scan published reports'
+        row['cancelledReportNotPublished'] = True
+        initialize = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+            'protocolVersion': '2025-11-25', 'capabilities': {},
+            'clientInfo': {'name': 'recovery-verification', 'version': '1'}}}
+        frames = (json.dumps(initialize).encode() + b'\n{invalid}\n\xff\n'
+                  + b'{"jsonrpc":"2.0","id":2,"method":42}\n'
+                  + b'{"jsonrpc":"2.0","id":3,"method":"ping"}\n')
+        process = subprocess.Popen(client.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(frames, timeout=10)
+        assert process.returncode == 0, stderr
+        recovered = [json.loads(line) for line in stdout.splitlines()]
+        assert len(recovered) == 5 and recovered[0]['id'] == 1, recovered
+        assert [row['error']['code'] for row in recovered[1:4]] == [-32700, -32700, -32600], recovered
+        assert all(row['id'] is None for row in recovered[1:4]), recovered
+        assert recovered[4] == {'jsonrpc': '2.0', 'id': 3, 'result': {}}, recovered
+        row['malformedFrameRecoveryVerified'] = True
+        process = subprocess.Popen(client.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(b'x' * (1024 * 1024 + 1), timeout=10)
+        assert process.returncode != 0 and not stdout, 'Oversize frame was not rejected'
+        row['oversizeFrameRejected'] = True
     (args.output / 'stable-reports.json').write_text(json.dumps(reference, ensure_ascii=False, indent=2) + '\n')
+    summary['verifiedRuntimeMajors'] = sorted(row['major'] for row in summary['runtimes'])
+    assert summary['verifiedRuntimeMajors'] == summary['requiredRuntimeMajors']
     summary['crossRuntimeEquivalent'] = True
     summary['passed'] = True
     (args.output / 'runtime-matrix.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')

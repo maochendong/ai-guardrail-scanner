@@ -1,8 +1,10 @@
 package dev.aiguard.compat;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Bounded, language-neutral local flow. Unknown constructs never establish controls. */
 public final class BankFlow {
@@ -11,6 +13,8 @@ public final class BankFlow {
   public static final class Program {
     public final List<Function> functions = new ArrayList<Function>();
     public final List<Map<String, Object>> diagnostics = new ArrayList<Map<String, Object>>();
+    /** Files with discarded or unvisited source; local UNKNOWN nodes do not belong here. */
+    public final Set<String> incompletePaths = new LinkedHashSet<String>();
   }
 
   public static final class Function {

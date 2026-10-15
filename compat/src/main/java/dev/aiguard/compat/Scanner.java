@@ -13,6 +13,8 @@ public final class Scanner {
       throws Exception {
     policy.checkRepository(root);
     Inventory inventory = Inventory.load(root, cancel);
+    JavaSyntax.Cache javaSyntax = new JavaSyntax.Cache();
+    PythonSyntax.Cache pythonSyntax = new PythonSyntax.Cache();
     List<Map<String, Object>> assessments = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> diagnostics =
         new ArrayList<Map<String, Object>>(inventory.diagnostics);
@@ -23,7 +25,7 @@ public final class Scanner {
     int gateways = 0;
     String springVersion = "UNKNOWN", versionStatus = "UNKNOWN";
     if (inventory.javaFiles > 0 || !inventory.javaAndConfig.isEmpty()) {
-      AnalysisResult java = JavaAnalysis.analyze(inventory.javaAndConfig, cancel);
+      AnalysisResult java = JavaAnalysis.analyze(inventory.javaAndConfig, cancel, javaSyntax);
       assessments.addAll(java.assessments);
       diagnostics.addAll(java.diagnostics);
       protocols.addAll(java.protocols);
@@ -34,7 +36,7 @@ public final class Scanner {
       languages.add("java");
     }
     if (!inventory.python.isEmpty()) {
-      AnalysisResult python = PythonAnalysis.analyze(inventory.python, cancel);
+      AnalysisResult python = PythonAnalysis.analyze(inventory.python, cancel, pythonSyntax);
       assessments.addAll(python.assessments);
       diagnostics.addAll(python.diagnostics);
       protocols.addAll(python.protocols);
@@ -49,7 +51,7 @@ public final class Scanner {
               "",
               "No supported production Java or Python source was analyzed."));
     if (policy.enabled()) {
-      BankAnalysis bank = BankAnalysis.analyze(inventory, policy, cancel);
+      BankAnalysis bank = BankAnalysis.analyze(inventory, policy, cancel, javaSyntax, pythonSyntax);
       assessments.addAll(0, bank.assessments);
       diagnostics.addAll(bank.diagnostics);
       mappingCoverage.putAll(bank.mappingCoverage);
@@ -89,7 +91,7 @@ public final class Scanner {
             "schemaVersion",
             "1.4",
             "ruleSetVersion",
-            "java-python-guardrail-v5",
+            "java-python-guardrail-v6",
             "scanId",
             id,
             "createdAt",
@@ -123,7 +125,7 @@ public final class Scanner {
                 "minimumJavaVersion",
                 "1.7",
                 "scannerVersion",
-                "0.5.0"),
+                "0.5.1"),
             "policy",
             policy.metadata(),
             "mappingCoverage",

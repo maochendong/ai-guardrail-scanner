@@ -13,6 +13,28 @@ public class JavaSyntaxGraphTest {
         public void check() {}
       };
 
+  @Test
+  public void wideTypeCallLookupStaysWithinLinearWorkAllowance() {
+    StringBuilder source = new StringBuilder("final class Wide { int target(){return 1;}");
+    for (int i = 0; i < 500; i++)
+      source.append("int member").append(i).append("(){return target();}");
+    source.append("}");
+    Unit unit = JavaSyntax.parse(new SourceFile("src/Wide.java", source.toString()), NONE);
+    assertEquals(0, unit.syntaxErrors);
+    final int[] checks = {0};
+    JavaGraph graph =
+        new JavaGraph(
+            Arrays.asList(unit),
+            new Cancel() {
+              public void check() {
+                if (++checks[0] > 30000)
+                  throw new AssertionError("Wide-type lookup work allowance exceeded");
+              }
+            });
+    assertTrue(graph.diagnostics().toString(), graph.diagnostics().isEmpty());
+    assertEquals(1, graph.resolve(call(graph, "target")).targets.size());
+  }
+
   static JavaGraph graph(String... sources) {
     List<Unit> units = new ArrayList<Unit>();
     int i = 0;

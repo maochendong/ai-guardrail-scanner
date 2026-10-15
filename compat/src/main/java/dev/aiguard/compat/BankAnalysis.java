@@ -13,6 +13,7 @@ public final class BankAnalysis {
   private int operations, serial;
   private boolean incomplete;
   private final Set<String> limitedRules = new HashSet<String>();
+  private final Set<String> incompleteSourceRules = new HashSet<String>();
   private final Set<String> bindingRules = new HashSet<String>();
   private final Set<String> declaredRules = new HashSet<String>();
   private List<State> exceptionFrame;
@@ -37,6 +38,8 @@ public final class BankAnalysis {
           0,
           "analyzedFunctions",
           0,
+          "incompleteSourceFiles",
+          0,
           "sourceDigestMatched",
           true);
   private String mappingFailure = "";
@@ -49,6 +52,12 @@ public final class BankAnalysis {
   }
 
   public static BankAnalysis analyze(Inventory inventory, BankPolicy policy, Cancel cancel) {
+    return analyze(inventory, policy, cancel, new JavaSyntax.Cache(), new PythonSyntax.Cache());
+  }
+
+  public static BankAnalysis analyze(
+      Inventory inventory, BankPolicy policy, Cancel cancel,
+      JavaSyntax.Cache javaSyntax, PythonSyntax.Cache pythonSyntax) {
     if (policy.contractCount() == 0 || !policy.matchesSourceDigest(inventory.digest)) {
       BankFlow.Program empty = new BankFlow.Program();
       empty.diagnostics.add(
@@ -65,16 +74,20 @@ public final class BankAnalysis {
       missing.finish();
       return missing;
     }
-    BankFlow.Program java = BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel, policy);
-    BankFlow.Program python = BankPythonAnalysis.adapt(inventory.python, cancel, policy);
+    BankFlow.Program java = BankJavaAnalysis.adapt(inventory.javaAndConfig, cancel, policy, javaSyntax);
+    BankFlow.Program python = BankPythonAnalysis.adapt(inventory.python, cancel, policy, pythonSyntax);
     java.functions.addAll(python.functions);
     java.diagnostics.addAll(python.diagnostics);
+    java.incompletePaths.addAll(python.incompletePaths);
     return analyze(java, policy, cancel);
   }
 
   public static BankAnalysis analyze(BankFlow.Program program, BankPolicy policy, Cancel cancel) {
     BankAnalysis analysis = new BankAnalysis(policy, cancel);
     analysis.diagnostics.addAll(program.diagnostics);
+    analysis.mappingCoverage.put("incompleteSourceFiles", program.incompletePaths.size());
+    if (!program.incompletePaths.isEmpty())
+      analysis.incompleteSourceRules.addAll(analysis.declaredRules);
     int analyzed = 0;
     Set<String> definitions = new HashSet<String>();
     try {
@@ -87,7 +100,8 @@ public final class BankAnalysis {
         analysis.currentFunction = function;
         State initial = new State();
         for (Map<String, Object> diagnostic : program.diagnostics)
-          if (function.path.equals(diagnostic.get("path"))) initial.uncertain = true;
+          if (function.path.equals(diagnostic.get("path"))
+              && !"local".equals(diagnostic.get("flowScope"))) initial.uncertain = true;
         for (String param : function.params) initial.vars.put(param, analysis.fresh(null));
         try {
           List<State> exits = analysis.walk(function.body, Arrays.asList(initial), 0);
@@ -1071,6 +1085,7 @@ public final class BankAnalysis {
               : outcome == null
                       || outcome.unknown
                       || limitedRules.contains(id)
+                      || incompleteSourceRules.contains(id)
                       || bindingRules.contains(id)
                   ? "UNKNOWN"
                   : "OBSERVED";
@@ -1119,6 +1134,13 @@ public final class BankAnalysis {
               "UNSUPPORTED",
               "BANK_ANALYSIS_BOUNDED",
               "A mapped analysis exceeded its budget before all relevant sites could be visited.");
+        else if (outcome == null && incompleteSourceRules.contains(id))
+          Unknowns.set(
+              finding,
+              "UNSUPPORTED",
+              "SOURCE_FLOW_INCOMPLETE",
+              "Source was discarded or left unvisited after a parse or adaptation failure;"
+                  + " mapped rule coverage is incomplete.");
         else if (outcome == null)
           Unknowns.set(
               finding,
@@ -1145,6 +1167,13 @@ public final class BankAnalysis {
                 "UNSUPPORTED",
                 "BANK_ANALYSIS_BOUNDED",
                 "An analysis budget was reached; unvisited mapped paths remain unknown.");
+          if (incompleteSourceRules.contains(id))
+            Unknowns.set(
+                finding,
+                "UNSUPPORTED",
+                "SOURCE_FLOW_INCOMPLETE",
+                "Source was discarded or left unvisited after a parse or adaptation failure;"
+                    + " mapped rule coverage is incomplete.");
         }
       }
       finding.put("profile", policy.profile);

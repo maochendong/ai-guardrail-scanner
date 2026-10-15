@@ -42,6 +42,11 @@ public final class JavaAnalysis {
   }
 
   public static AnalysisResult analyze(List<SourceFile> files, Cancel cancel) {
+    return analyze(files, cancel, new JavaSyntax.Cache());
+  }
+
+  public static AnalysisResult analyze(
+      List<SourceFile> files, Cancel cancel, JavaSyntax.Cache syntax) {
     cancel.check();
     AnalysisResult result = new AnalysisResult();
     LegacyConfiguration configuration = new LegacyConfiguration(files, cancel);
@@ -49,7 +54,7 @@ public final class JavaAnalysis {
     for (SourceFile file : files)
       if (file.path.endsWith(".java")) {
         cancel.check();
-        Unit unit = JavaSyntax.parse(file, cancel);
+        Unit unit = syntax.parse(file, cancel);
         units.add(unit);
         result.diagnostics.addAll(unit.diagnostics);
       }
