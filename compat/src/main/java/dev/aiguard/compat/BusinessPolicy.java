@@ -39,6 +39,19 @@ public final class BusinessPolicy {
     }
   }
 
+  /** One boolean accessor on the exact object returned by an operator-mapped check. */
+  public static final class DecisionPredicate {
+    public final String symbol;
+    public final int arg;
+    public final boolean accept;
+
+    private DecisionPredicate(String symbol, int arg, boolean accept) {
+      this.symbol = symbol;
+      this.arg = arg;
+      this.accept = accept;
+    }
+  }
+
   public static final class Contract {
     public final String symbol, kind, label, control, channel;
     public final String assurance,
@@ -51,6 +64,7 @@ public final class BusinessPolicy {
     public final int arity, arg, identity, decisionArg;
     public final List<Integer> args, outboundArgs;
     public final List<String> parameterNames, valuePath;
+    public final List<DecisionPredicate> decisionPredicates;
     public final Map<String, Object> defaults;
     public final boolean accept;
 
@@ -81,6 +95,7 @@ public final class BusinessPolicy {
       boolean accepted = true;
       List<Integer> slots = new ArrayList<Integer>(), outbound = new ArrayList<Integer>();
       List<String> names = new ArrayList<String>(), path = new ArrayList<String>();
+      List<DecisionPredicate> predicates = new ArrayList<DecisionPredicate>();
       Map<String, Object> defaultValues = new LinkedHashMap<String, Object>();
       if (version == 2) {
         allowed.addAll(set("assurance", "parameterNames", "defaults"));
@@ -145,9 +160,31 @@ public final class BusinessPolicy {
               if (!"boolean".equals(checkMode) || !o.get("decision").isJsonObject())
                 throw invalid();
               JsonObject choice = o.getAsJsonObject("decision");
-              keys(choice, set("symbol", "arg"));
-              decision = symbol(choice, "symbol", false);
-              decisionSlot = integer(choice, "arg", -1, 0);
+              if (choice.has("all")) {
+                keys(choice, set("all"));
+                JsonArray clauses = array(choice.get("all"));
+                if (clauses.size() == 0 || clauses.size() > 8) throw invalid();
+                Set<String> seen = new HashSet<String>();
+                for (JsonElement element : clauses) {
+                  if (!element.isJsonObject()) throw invalid();
+                  JsonObject clause = element.getAsJsonObject();
+                  keys(clause, set("symbol", "arg", "accept"));
+                  String predicateSymbol = symbol(clause, "symbol", false);
+                  int predicateArg = integer(clause, "arg", -1, 0);
+                  JsonElement expected = clause.get("accept");
+                  if (expected == null
+                      || !expected.isJsonPrimitive()
+                      || !expected.getAsJsonPrimitive().isBoolean()
+                      || !seen.add(predicateSymbol + ":" + predicateArg)) throw invalid();
+                  predicates.add(
+                      new DecisionPredicate(
+                          predicateSymbol, predicateArg, expected.getAsBoolean()));
+                }
+              } else {
+                keys(choice, set("symbol", "arg"));
+                decision = symbol(choice, "symbol", false);
+                decisionSlot = integer(choice, "arg", -1, 0);
+              }
             }
           }
           if (version == 1 || "boolean".equals(checkMode)) required.add("accept");
@@ -159,6 +196,9 @@ public final class BusinessPolicy {
             if ("normal-return".equals(checkMode) && !accepted) throw invalid();
           }
           slots = slots(o.get("args"), arity - 1, false);
+          if (!predicates.isEmpty() && !accepted) throw invalid();
+          if (!decision.isEmpty())
+            predicates.add(new DecisionPredicate(decision, decisionSlot, accepted));
         } else {
           allowed.add("channel");
           required.add("channel");
@@ -228,6 +268,7 @@ public final class BusinessPolicy {
       scope = dataScope;
       decisionSymbol = decision;
       decisionArg = decisionSlot;
+      decisionPredicates = Collections.unmodifiableList(predicates);
       args = Collections.unmodifiableList(slots);
       outboundArgs = Collections.unmodifiableList(outbound);
       parameterNames = Collections.unmodifiableList(names);

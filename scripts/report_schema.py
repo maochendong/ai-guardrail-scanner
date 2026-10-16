@@ -195,7 +195,10 @@ def validate_context(item, section, tag):
                 assert isinstance(site['checkPath'], str) and type(site['checkLine']) is int, (tag, site)
                 assert (site['checkPath'] == '' and site['checkLine'] == 0) or (site['checkPath'] and site['checkLine'] > 0), (tag, site)
                 assert site['ordering'] in {'RELEASE_PRECEDES_MAPPED_CHECK', 'ACCEPTED_CHECK_PRECEDES_RELEASE', 'ORDER_UNRESOLVED'}, (tag, site)
-                assert site['valueBinding'] in {'same', 'different', 'unknown'}, (tag, site)
+                assert site['valueBinding'] in {'same', 'different', 'unknown', 'checked-value-derived-from-release'}, (tag, site)
+                if site['valueBinding'] == 'checked-value-derived-from-release':
+                    assert 'DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE' in site['limits'], (tag, 'derived stream value lacks limitation')
+                    assert site['checkPath'] and site['checkLine'] > 0, (tag, 'derived stream value lacks check location')
                 assert site['assurance'] in {'reviewed', 'candidate', 'unknown'}, (tag, site)
                 assert site['failureMode'] in {'closed', 'open', 'unknown'}, (tag, site)
                 if site['ordering'] != 'ORDER_UNRESOLVED':

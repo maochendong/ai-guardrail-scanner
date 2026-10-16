@@ -195,9 +195,13 @@ public final class BusinessAnalysis {
     boolean sense = true;
     Boolean bool;
     Proof decision;
+    BusinessPolicy.Contract decisionContract;
+    String decisionOwner = "";
     boolean accepted = true;
     boolean knownLiteral;
     boolean iterationElement;
+    boolean structured;
+    String structureKind = "";
     Object literal;
     BusinessPolicy.Contract pending;
     Proof pendingProof;
@@ -211,17 +215,22 @@ public final class BusinessAnalysis {
     String key;
     int epoch;
     Map<String, Object> evidence;
+    final List<Value> checked = new ArrayList<Value>();
+    final Map<String, Value> objectSnapshots = new HashMap<String, Value>();
     boolean assured = true, failureOpen, failureUnknown;
   }
 
   private static final class State {
     final Map<String, Value> vars = new HashMap<String, Value>();
+    // Immutable object versions keep field writes local to each explored path.
+    final Map<String, Value> objects = new HashMap<String, Value>();
     final Map<String, Proof> proofs = new LinkedHashMap<String, Proof>();
     // Observed checks aid diagnosis even when opaque arguments prevent granting a proof.
     final Map<String, Proof> checks = new LinkedHashMap<String, Proof>();
     final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     final Map<String, Boolean> conditions = new HashMap<String, Boolean>();
     final Set<String> invalidated = new HashSet<String>();
+    final Set<Proof> invalidatedProofs = new HashSet<Proof>();
     boolean uncertain;
     int epoch;
     String stopped = "";
@@ -231,11 +240,13 @@ public final class BusinessAnalysis {
     State copy() {
       State copy = new State();
       copy.vars.putAll(vars);
+      copy.objects.putAll(objects);
       copy.proofs.putAll(proofs);
       copy.checks.putAll(checks);
       copy.reasons.addAll(reasons);
       copy.conditions.putAll(conditions);
       copy.invalidated.addAll(invalidated);
+      copy.invalidatedProofs.addAll(invalidatedProofs);
       copy.uncertain = uncertain;
       copy.stopped = stopped;
       copy.returnValue = returnValue;
@@ -448,6 +459,8 @@ public final class BusinessAnalysis {
         for (String name : names)
           merged.vars.put(name, join(merged.vars.get(name), state.vars.get(name)));
         merged.invalidated.addAll(state.invalidated);
+        merged.invalidatedProofs.addAll(state.invalidatedProofs);
+        mergeObjects(merged, state);
         for (Map<String, Object> reason : state.reasons)
           if (!merged.reasons.contains(reason)) merged.reasons.add(reason);
         merged.epoch = Math.max(merged.epoch, state.epoch + 1);
@@ -523,8 +536,11 @@ public final class BusinessAnalysis {
     state.conditions.put(value.id, originalDesired);
     if (value.opaque || (value.decision != null && value.decision.epoch != state.epoch))
       state.uncertain = true;
-    if (value.decision != null && value.decision.epoch == state.epoch && desired == value.accepted)
-      state.proofs.put(value.decision.key, value.decision);
+    if (value.decision != null
+        && value.decision.epoch == state.epoch
+        && freshProof(value.decision, state)
+        && desired == value.accepted
+        && decisionSatisfied(value, state)) state.proofs.put(value.decision.key, value.decision);
     return Arrays.asList(state);
   }
 
@@ -538,7 +554,7 @@ public final class BusinessAnalysis {
     }
     if ("NAME".equals(expr.kind)) {
       Value value = state.vars.get(expr.name);
-      return value == null ? unknown(expr) : value;
+      return value == null ? unknown(expr) : current(value, state);
     }
     if ("LITERAL".equals(expr.kind)) {
       Value value = fresh(expr);
@@ -578,6 +594,8 @@ public final class BusinessAnalysis {
     if ("MAP".equals(expr.kind)) {
       Value map = fresh(expr);
       map.redacted = true;
+      map.structured = true;
+      map.structureKind = expr.name.isEmpty() ? "map" : expr.name;
       for (Map.Entry<String, BusinessFlow.Expr> member : expr.members.entrySet()) {
         Value value = eval(member.getValue(), state, depth + 1);
         map.members.put(member.getKey(), value);
@@ -590,17 +608,90 @@ public final class BusinessAnalysis {
       return map;
     }
     Value receiver = expr.receiver == null ? null : eval(expr.receiver, state, depth + 1);
+    if (receiver != null) receiver = current(receiver, state);
     if ("MEMBER".equals(expr.kind)) {
+      Value decision = projection(expr, receiver, Collections.<Value>emptyList(), state);
+      if (decision != null) return decision;
       if (receiver != null
           && !state.invalidated.contains(receiver.id)
-          && receiver.members.containsKey(expr.name)) return receiver.members.get(expr.name);
+          && receiver.members.containsKey(expr.name))
+        return current(receiver.members.get(expr.name), state);
       Value unresolved = unknown(expr);
-      if (receiver != null) inherit(unresolved, receiver);
+      if (receiver != null) {
+        inherit(unresolved, receiver);
+        invalidateCall(state, Arrays.asList(receiver));
+      }
+      exceptional(state);
       return unresolved;
     }
     List<Value> args = new ArrayList<Value>();
     for (BusinessFlow.Expr arg : expr.args) args.add(eval(arg, state, depth + 1));
     if (!state.stopped.isEmpty()) return unknown(expr);
+    if ("PUT_MEMBER".equals(expr.kind)) {
+      if (receiver != null
+          && receiver.structured
+          && receiver.pending == null
+          && !state.invalidated.contains(receiver.id)
+          && args.size() == 1
+          && !expr.name.isEmpty()) {
+        Value updated = copy(receiver);
+        Value old = updated.members.put(expr.name, args.get(0));
+        if (updated.members.size() > 128) throw new Limit();
+        // A changed envelope is a new checked value, while unchanged child identities survive.
+        invalidateProofsFor(state, receiver.id);
+        refreshStructure(updated, state);
+        state.objects.put(receiver.id, updated);
+        return "void".equals(expr.operator) || old == null ? literal(null) : current(old, state);
+      }
+      List<Value> touched = new ArrayList<Value>(args);
+      if (receiver != null) touched.add(receiver);
+      invalidateCall(state, touched);
+      exceptional(state);
+      return unknown(expr);
+    }
+    if ("DICT_GET".equals(expr.kind)
+        && receiver != null
+        && receiver.structured
+        && "dict".equals(receiver.structureKind)
+        && !state.invalidated.contains(receiver.id)
+        && (args.size() == 1 || args.size() == 2)
+        && args.get(0).knownLiteral
+        && args.get(0).literal instanceof String
+        && !args.get(0).opaque) {
+      Value field = receiver.members.get((String) args.get(0).literal);
+      return field != null ? current(field, state) : args.size() == 2 ? args.get(1) : literal(null);
+    }
+    if ("DICT_GET".equals(expr.kind)) {
+      List<Value> touched = new ArrayList<Value>(args);
+      if (receiver != null) touched.add(receiver);
+      invalidateCall(state, touched);
+      exceptional(state);
+      Value unresolved = unknown(expr);
+      for (Value value : touched) inherit(unresolved, value);
+      return unresolved;
+    }
+    if ("JSON_LOADS".equals(expr.kind)) {
+      if (args.size() == 1
+          && args.get(0).knownLiteral
+          && args.get(0).literal instanceof String
+          && !args.get(0).opaque
+          && ((String) args.get(0).literal).length() <= 65536) {
+        try {
+          return jsonValue(Json.parse((String) args.get(0).literal), 0);
+        } catch (java.io.IOException invalidOrUnsupported) {
+          // Python accepts some inputs rejected by the bounded strict parser (duplicate keys,
+          // NaN or larger/deeper documents). Keep both paths, never invent definite throwing.
+          exceptional(state);
+          state.uncertain = true;
+          return unknown(expr);
+        }
+      }
+      invalidateCall(state, args);
+      exceptional(state);
+      Value unresolved = unknown(expr);
+      for (Value arg : args) inherit(unresolved, arg);
+      return unresolved;
+    }
     if ("UNARY".equals(expr.kind)
         && args.size() == 1
         && Arrays.asList("!", "not").contains(expr.operator)) {
@@ -654,8 +745,8 @@ public final class BusinessAnalysis {
         args = binding.args;
         callSites.add(site(expr));
         if (expr.bindingUncertain) candidateSites.add(site(expr));
-        exceptional(state);
         boolean candidate = expr.bindingUncertain || "candidate".equals(contract.assurance);
+        if (!(candidate && "transform".equals(contract.kind))) exceptional(state);
         if ("source".equals(contract.kind)) {
           if ("model-output".equals(contract.label) && !candidate) modelSourceSites.add(site(expr));
           if (!contract.outboundArgs.isEmpty()) {
@@ -677,6 +768,12 @@ public final class BusinessAnalysis {
           return value;
         }
         if ("transform".equals(contract.kind)) {
+          if (candidate) {
+            List<Value> touched = new ArrayList<Value>(args);
+            if (receiver != null) touched.add(receiver);
+            invalidateCall(state, touched);
+            exceptional(state);
+          }
           Value input = contract.arg < 0 ? receiver : args.get(contract.arg);
           if (input == null) return unknown(expr);
           Value value = copy(input);
@@ -688,16 +785,36 @@ public final class BusinessAnalysis {
             value.knownLiteral = false;
             value.literal = null;
             value.members.clear();
+            value.structured = false;
+            value.structureKind = "";
             value.trusted = false;
             value.decision = null;
             value.pending = null;
             value.bool = null;
           }
-          if (candidate)
+          if (candidate) {
+            // Candidate preservation is not proven equality, including object membership and
+            // decision identity. A fresh identity also prevents an existing heap version from
+            // replacing this qualified-unknown value with its trusted input alias.
+            value.id = "v" + (++serial);
+            value.members.clear();
+            value.structured = false;
+            value.structureKind = "";
+            value.knownLiteral = false;
+            value.literal = null;
+            value.trusted = false;
+            value.identityKnown = false;
+            value.decision = null;
+            value.decisionContract = null;
+            value.decisionOwner = "";
+            value.pending = null;
+            value.pendingProof = null;
+            value.bool = null;
             uncertain(
                 value,
                 "TRANSFORM_NOT_QUALIFIED",
                 "Candidate transformation cannot establish coverage.");
+          }
           append(value.trace, location(expr, "transform", "Mapped returned value transformation."));
           return value;
         }
@@ -707,6 +824,9 @@ public final class BusinessAnalysis {
           List<Value> checked = select(args, contract.args);
           Proof proof = new Proof();
           proof.key = key(contract.control, checked);
+          proof.checked.addAll(checked);
+          for (Value checkedValue : checked)
+            snapshotObjects(checkedValue, proof.objectSnapshots, state, 0);
           proof.epoch = state.epoch;
           proof.assured = !candidate;
           proof.failureOpen = "open".equals(contract.failureMode);
@@ -717,7 +837,7 @@ public final class BusinessAnalysis {
           if (!opaque(checked, state)) {
             value.accepted = contract.accept;
             if ("normal-return".equals(contract.mode)) state.proofs.put(proof.key, proof);
-            else if (!contract.decisionSymbol.isEmpty()) {
+            else if (!contract.decisionPredicates.isEmpty()) {
               value.pending = contract;
               value.pendingProof = proof;
             } else value.decision = proof;
@@ -771,6 +891,16 @@ public final class BusinessAnalysis {
       return value;
     }
     if ("COMPOSITE".equals(expr.kind) || "BINARY".equals(expr.kind)) {
+      if ("BINARY".equals(expr.kind) && "+".equals(expr.operator)) {
+        boolean builtInLiterals = true;
+        for (Value arg : args)
+          builtInLiterals &= arg.knownLiteral && !arg.opaque && !state.invalidated.contains(arg.id);
+        // Dynamic + may invoke __add__/__radd__/toString and mutate a checked operand.
+        if (!builtInLiterals) {
+          invalidateCall(state, args);
+          exceptional(state);
+        }
+      }
       Value value = fresh(expr);
       value.redacted = true;
       value.opaque = true;
@@ -864,6 +994,8 @@ public final class BusinessAnalysis {
       State other = normal.get(i);
       merged.uncertain |= other.uncertain;
       merged.invalidated.addAll(other.invalidated);
+      merged.invalidatedProofs.addAll(other.invalidatedProofs);
+      mergeObjects(merged, other);
       merged.epoch = Math.max(merged.epoch, other.epoch);
       intersectProofs(merged.proofs, other.proofs);
       intersectProofs(merged.checks, other.checks);
@@ -913,7 +1045,7 @@ public final class BusinessAnalysis {
   }
 
   private Value returned(State state) {
-    if (state.returnValue != null) return state.returnValue;
+    if (state.returnValue != null) return current(state.returnValue, state);
     Value value = fresh(null);
     value.knownLiteral = true;
     return value;
@@ -936,6 +1068,8 @@ public final class BusinessAnalysis {
         && left.knownLiteral == right.knownLiteral
         && Objects.equals(left.literal, right.literal)
         && left.decision == right.decision
+        && left.decisionContract == right.decisionContract
+        && left.decisionOwner.equals(right.decisionOwner)
         && left.pending == right.pending
         && left.pendingProof == right.pendingProof) return copy(left);
     Value joined = fresh(null);
@@ -974,6 +1108,8 @@ public final class BusinessAnalysis {
 
   /** Only value effects cross the frame boundary; callee locals never overwrite caller locals. */
   private void applyEffects(State caller, State exit) {
+    caller.objects.clear();
+    caller.objects.putAll(exit.objects);
     caller.uncertain |= exit.uncertain;
     caller.epoch = exit.epoch;
     caller.proofs.clear();
@@ -984,6 +1120,7 @@ public final class BusinessAnalysis {
     caller.conditions.clear();
     caller.conditions.putAll(exit.conditions);
     caller.invalidated.addAll(exit.invalidated);
+    caller.invalidatedProofs.addAll(exit.invalidatedProofs);
     for (Map<String, Object> item : exit.reasons)
       if (!caller.reasons.contains(item)) caller.reasons.add(item);
     for (Map.Entry<String, Value> entry : caller.vars.entrySet())
@@ -1196,21 +1333,44 @@ public final class BusinessAnalysis {
             : args.size() == 1 && args.get(0).pending != null ? args.get(0) : null;
     if (owner == null) return null;
     BusinessPolicy.Contract contract = owner.pending;
-    if (!contract.decisionSymbol.equals(expr.symbol)
-        || (contract.decisionArg == -1
-            ? owner != receiver || !args.isEmpty()
-            : args.size() != 1 || owner != args.get(0))) return null;
+    int selected = -1;
+    for (int i = 0; i < contract.decisionPredicates.size(); i++) {
+      BusinessPolicy.DecisionPredicate predicate = contract.decisionPredicates.get(i);
+      if (predicate.symbol.equals(expr.symbol)
+          && (predicate.arg == -1
+              ? owner == receiver && args.isEmpty()
+              : args.size() == 1 && owner == args.get(0))) {
+        selected = i;
+        break;
+      }
+    }
+    if (selected < 0) return null;
     exceptional(state);
     Value projected = fresh(expr);
     projected.decision = owner.pendingProof;
-    projected.accepted = contract.accept;
+    projected.accepted = contract.decisionPredicates.get(selected).accept;
+    projected.decisionContract = contract;
+    projected.decisionOwner = owner.id;
     projected.opaque =
         owner.opaque || expr.bindingUncertain || state.invalidated.contains(owner.id);
     projected.trace.addAll(owner.trace);
     callSites.add(site(expr));
     if (expr.bindingUncertain) candidateSites.add(site(expr));
     if (projected.opaque) projected.decision = null;
+    else projected.id = owner.id + "#decision:" + selected;
     return projected;
+  }
+
+  private boolean decisionSatisfied(Value value, State state) {
+    if (value.decisionContract == null) return true;
+    if (state.invalidated.contains(value.decisionOwner)) return false;
+    for (int i = 0; i < value.decisionContract.decisionPredicates.size(); i++) {
+      Boolean actual = state.conditions.get(value.decisionOwner + "#decision:" + i);
+      if (actual == null
+          || actual.booleanValue() != value.decisionContract.decisionPredicates.get(i).accept)
+        return false;
+    }
+    return true;
   }
 
   private void boundary(BusinessFlow.Stmt statement, Value returned, State state) {
@@ -1421,7 +1581,8 @@ public final class BusinessAnalysis {
 
   private void egress(BusinessFlow.Expr expr, List<Value> data, State state) {
     boolean sensitive = false, redacted = true;
-    for (Value value : data) {
+    for (Value raw : data) {
+      Value value = materialized(raw, state, new HashSet<String>(), 0);
       sensitive |= value.sensitive;
       if (value.sensitive && !value.redacted) redacted = false;
     }
@@ -1434,7 +1595,7 @@ public final class BusinessAnalysis {
     state.checks.clear();
     state.epoch++;
     Set<String> touched = new HashSet<String>();
-    for (Value arg : args) collectTouched(arg, touched, 0);
+    for (Value arg : args) collectTouched(current(arg, state), touched, state, 0);
     state.invalidated.addAll(touched);
     for (Map.Entry<String, Value> entry : state.vars.entrySet()) {
       if (touched.contains(entry.getValue().id)) {
@@ -1447,10 +1608,112 @@ public final class BusinessAnalysis {
     }
   }
 
-  private void collectTouched(Value value, Set<String> touched, int depth) {
+  private void collectTouched(Value value, Set<String> touched, State state, int depth) {
+    value = current(value, state);
     if (depth > 64) throw new Limit();
     if (!touched.add(value.id)) return;
-    for (Value member : value.members.values()) collectTouched(member, touched, depth + 1);
+    for (Value member : value.members.values()) collectTouched(member, touched, state, depth + 1);
+  }
+
+  private void snapshotObjects(Value value, Map<String, Value> snapshots, State state, int depth) {
+    if (depth > 64) throw new Limit();
+    value = current(value, state);
+    if (!value.structured || snapshots.containsKey(value.id)) return;
+    snapshots.put(value.id, value);
+    for (Value member : value.members.values())
+      snapshotObjects(member, snapshots, state, depth + 1);
+  }
+
+  private boolean freshProof(Proof proof, State state) {
+    if (state.invalidatedProofs.contains(proof)) return false;
+    for (Value snapshot : proof.objectSnapshots.values())
+      if (current(snapshot, state) != snapshot || state.invalidated.contains(snapshot.id))
+        return false;
+    return true;
+  }
+
+  private Value materialized(Value raw, State state, Set<String> seen, int depth) {
+    if (depth > 64) throw new Limit();
+    Value value = current(raw, state);
+    if (!value.structured || !seen.add(value.id)) return value;
+    Value resolved = copy(value);
+    resolved.members.clear();
+    for (Map.Entry<String, Value> member : value.members.entrySet())
+      resolved.members.put(
+          member.getKey(), materialized(member.getValue(), state, seen, depth + 1));
+    refreshStructure(resolved, state);
+    return resolved;
+  }
+
+  private void refreshStructure(Value value, State state) {
+    value.labels.clear();
+    value.sensitive = false;
+    value.redacted = true;
+    value.opaque = false;
+    for (Value item : value.members.values()) {
+      Value member = item;
+      inherit(value, member);
+      value.opaque |= member.opaque || state.invalidated.contains(member.id);
+      if (member.sensitive && !member.redacted) value.redacted = false;
+    }
+  }
+
+  private Value current(Value value, State state) {
+    Value updated = state.objects.get(value.id);
+    return updated == null ? value : updated;
+  }
+
+  private void invalidateProofsFor(State state, String id) {
+    for (Map<String, Proof> proofs : Arrays.asList(state.proofs, state.checks))
+      for (Iterator<Map.Entry<String, Proof>> it = proofs.entrySet().iterator(); it.hasNext(); ) {
+        Proof proof = it.next().getValue();
+        Set<String> touched = new HashSet<String>();
+        for (Value checked : proof.checked) collectTouched(checked, touched, state, 0);
+        if (touched.contains(id)) {
+          state.invalidatedProofs.add(proof);
+          it.remove();
+        }
+      }
+  }
+
+  private void mergeObjects(State target, State other) {
+    Set<String> ids = new HashSet<String>(target.objects.keySet());
+    ids.addAll(other.objects.keySet());
+    for (String id : ids) {
+      Value a = target.objects.get(id), b = other.objects.get(id);
+      if (a == null || b == null || !a.members.equals(b.members)) {
+        target.invalidated.add(id);
+        target.objects.remove(id);
+      }
+    }
+  }
+
+  private Value literal(Object object) {
+    BusinessFlow.Expr expr = new BusinessFlow.Expr("LITERAL");
+    expr.literal = object;
+    return eval(expr, new State(), 0);
+  }
+
+  private Value jsonValue(com.google.gson.JsonElement element, int depth) {
+    tick();
+    if (depth > 32) throw new Limit();
+    if (element.isJsonNull()) return literal(null);
+    if (element.isJsonPrimitive()) {
+      com.google.gson.JsonPrimitive p = element.getAsJsonPrimitive();
+      return p.isBoolean()
+          ? literal(p.getAsBoolean())
+          : p.isString() ? literal(p.getAsString()) : literal(p.getAsBigDecimal());
+    }
+    Value value = fresh(null);
+    if (!element.isJsonObject()) return unknown(null);
+    value.structured = true;
+    value.structureKind = "dict";
+    for (Map.Entry<String, com.google.gson.JsonElement> field :
+        element.getAsJsonObject().entrySet()) {
+      if (value.members.size() >= 128) throw new Limit();
+      value.members.put(field.getKey(), jsonValue(field.getValue(), depth + 1));
+    }
+    return value;
   }
 
   private Value copy(Value source) {
@@ -1464,6 +1727,8 @@ public final class BusinessAnalysis {
     value.sense = source.sense;
     value.bool = source.bool;
     value.decision = source.decision;
+    value.decisionContract = source.decisionContract;
+    value.decisionOwner = source.decisionOwner;
     value.accepted = source.accepted;
     value.trace.addAll(source.trace);
     value.labels.addAll(source.labels);
@@ -1473,6 +1738,8 @@ public final class BusinessAnalysis {
     value.pendingProof = source.pendingProof;
     value.knownLiteral = source.knownLiteral;
     value.iterationElement = source.iterationElement;
+    value.structured = source.structured;
+    value.structureKind = source.structureKind;
     value.literal = source.literal;
     return value;
   }
@@ -1484,8 +1751,10 @@ public final class BusinessAnalysis {
   }
 
   private boolean opaque(List<Value> values, State state) {
-    for (Value value : values)
+    for (Value raw : values) {
+      Value value = materialized(raw, state, new HashSet<String>(), 0);
       if (value.opaque || state.invalidated.contains(value.id)) return true;
+    }
     return false;
   }
 
@@ -1516,11 +1785,14 @@ public final class BusinessAnalysis {
                 + " skipped.");
       }
     }
-    List<Value> data = select(args, contract.args);
+    List<Value> data = new ArrayList<Value>();
+    for (Value raw : select(args, contract.args))
+      data.add(materialized(raw, state, new HashSet<String>(), 0));
     if (!contract.valuePath.isEmpty()) {
       List<Value> projected = new ArrayList<Value>();
       for (Value value : data) {
         for (String member : contract.valuePath) {
+          value = current(value, state);
           Value next = state.invalidated.contains(value.id) ? null : value.members.get(member);
           if (next == null) {
             Value missing = unknown(expr);

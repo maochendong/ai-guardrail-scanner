@@ -204,11 +204,49 @@ class ReportSchemaTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.verify(data)
 
+    def test_derived_stream_relation_round_trip_keeps_its_limitation(self):
+        report, state, properties, markdown = context_fixture()
+        relation = 'checked-value-derived-from-release'
+        limit = 'DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE'
+        for assessment in [report['assessments'][0], properties['reviewAssessmentsDetails'][0],
+                           properties['contextAssessmentsDetails'][0]]:
+            assessment['streamTimingSites'][0]['valueBinding'] = relation
+            assessment['streamTimingSites'][0]['limits'].append(limit)
+        markdown = markdown.replace('值绑定：unknown', '值绑定：' + relation)
+        markdown += '- 时序限制：' + limit + '\n'
+        self.verify((report, state, properties, markdown))
+
+    def test_derived_stream_relation_cannot_authorize_or_hide_its_limit(self):
+        from report_schema import validate_context
+        for missing_limit in [True, False]:
+            report, _, _, markdown = context_fixture()
+            item = report['assessments'][0]
+            item['callContextSites'] = []
+            site = item['streamTimingSites'][0]
+            site.update(valueBinding='checked-value-derived-from-release', assurance='reviewed', failureMode='closed')
+            if not missing_limit:
+                site['limits'].append('DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE')
+                site['ordering'] = 'ACCEPTED_CHECK_PRECEDES_RELEASE'
+            with self.assertRaisesRegex(AssertionError, 'derived stream value lacks limitation|unqualified accepted check'):
+                validate_context(item, markdown, 'fixture')
+
     def test_timing_missing_check_location_is_rejected(self):
         data = context_fixture()
         data[0]['assessments'][0]['streamTimingSites'][0]['checkLine'] = 0
         with self.assertRaises(AssertionError):
             self.verify(data)
+
+    def test_derived_stream_relation_requires_check_location_even_when_order_unresolved(self):
+        from report_schema import validate_context
+        report, _, _, markdown = context_fixture()
+        item = report['assessments'][0]
+        item['callContextSites'] = []
+        site = item['streamTimingSites'][0]
+        site.update(valueBinding='checked-value-derived-from-release', ordering='ORDER_UNRESOLVED',
+                    checkPath='', checkLine=0)
+        site['limits'].append('DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE')
+        with self.assertRaisesRegex(AssertionError, 'derived stream value lacks check location'):
+            validate_context(item, markdown, 'fixture')
 
     def test_context_unknown_identity_cannot_be_encoded_as_trusted_boolean(self):
         data = context_fixture()
@@ -435,7 +473,7 @@ class ReportSchemaTest(unittest.TestCase):
                                  for node in tree.body), name)
             values = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
                       and isinstance(node.value, str)}
-            self.assertTrue({'0.8.0', '1.7', 'java-python-guardrail-v9'} <= values, name)
+            self.assertTrue({'0.9.0', '1.8', 'java-python-guardrail-v10'} <= values, name)
             self.assertTrue({'0.5.1', '1.4', 'java-python-guardrail-v6'}.isdisjoint(values), name)
 
 

@@ -91,6 +91,25 @@ JSON 保留上述字段，Markdown 展示对应位置与限制；SARIF 的 `cont
 
 报告 schema `1.7` 新增 `semanticOrigin`（来源规则、语言、共享引擎及策略摘要）、`semanticScope: MAPPED_LOCAL_SITES_ONLY`、`semanticCoverageIncomplete`，明确证据的来源与局部边界。位置关联用不暴露 API 符号的摘要标识；SARIF 的 `semanticAssessmentsDetails` 保留全部语义评估，包括 OBSERVED 和 VIOLATED，Markdown 显示相同来源与范围。局部 OBSERVED 不是整个规则通过，新增评估可能增加 UNKNOWN 记录数。
 
+## 0.9.0 复合结果判定
+
+v2 的 `decision` 兼容旧单一访问器，并新增有限合取形式。下面描述同一个检查结果必须同时允许且不要求二次审核；外层 check 的 `accept` 必须为 `true`：
+
+```json
+{
+  "all": [
+    {"symbol": "example.Decision#allowed", "arg": -1, "accept": true},
+    {"symbol": "example.Decision#needsReview", "arg": -1, "accept": false}
+  ]
+}
+```
+
+`all` 包含 1–8 个唯一 `(symbol,arg)`，每项显式声明布尔 `accept`；不能与旧 `symbol/arg` 格式混合，不能添加任意表达式或嵌套组合。实例访问器用 `arg:-1`，单参数外部谓词用 `arg:0`。同一路径必须满足同一次检查返回对象的全部叶子；检查两个不同返回对象、少检查一项、以 OR 放行、读取后修改对象，均不构成完整接受证明。接受的布尔事实与合同资格、失败策略、身份来源仍分开。
+
+字段值流只处理有源码或明确基础类型依据的结构。动态 JSON 解码不能凭字段名称恢复模型结果、身份或安全属性；源码生成方法、未建模集合元素与所有输出的关系仍可能 UNKNOWN。Python 常量 JSON 摘要仅在已扫描源码不存在同名 `json.py` / `json/__init__.py` 时启用；有同名模块时保留普通调用，不猜测 `PYTHONPATH`，显式运营合同仍优先。
+
+报告 schema `1.8` 的时序值关系增加 `checked-value-derived-from-release`，表示检查输入在源码中由先前释放值构造。它必须携带非空检查文件、正行号及 `DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE` 限制，即使顺序尚未确定也不能省略检查位置；不能与 `same` 混用，也不能产生 `ACCEPTED_CHECK_PRECEDES_RELEASE` 的保护结论。
+
 ## 保留的分析边界
 
 本轮支持常量 Map/字典字段、显式构造器和值载体、对象判定、受限 Python receiver 和默认参数，未实现完整跨过程分析。0.6.0 对 Java 根赋值/返回条件表达式保留择一分支；调用参数内部的条件表达式仍可能未知。隐式虚调用保留可定位的候选符号，不推断部署实现。

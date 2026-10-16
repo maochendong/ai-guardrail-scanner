@@ -5,7 +5,9 @@ import static org.junit.Assert.*;
 import java.util.Arrays;
 import org.junit.Test;
 
-/** Syntax evidence for bounded iteration; execution and proof semantics belong to BusinessAnalysis. */
+/**
+ * Syntax evidence for bounded iteration; execution and proof semantics belong to BusinessAnalysis.
+ */
 public class BusinessPythonIterationTest {
   private static final Cancel NEVER =
       new Cancel() {
@@ -64,9 +66,13 @@ public class BusinessPythonIterationTest {
   @Test
   public void complexTargetsAndWhileLoopsStayUnknown() {
     for (String header :
-        Arrays.asList("for first, second in stream:", "for result.part in stream:", "while active:")) {
+        Arrays.asList(
+            "for first, second in stream:", "for result.part in stream:", "while active:")) {
       BusinessFlow.Stmt loop =
-          function("def forward(stream, result, active):\n    " + header + "\n        yield result\n")
+          function(
+                  "def forward(stream, result, active):\n    "
+                      + header
+                      + "\n        yield result\n")
               .body
               .get(0);
       assertEquals("UNKNOWN", loop.kind);
@@ -98,7 +104,7 @@ public class BusinessPythonIterationTest {
   }
 
   @Test
-  public void loopBodyUnknownFlowIsNotSilentlyDiscarded() {
+  public void loopAdditionAndFollowingYieldAreBothPreserved() {
     BusinessFlow.Stmt loop =
         function(
                 "def forward(stream, total):\n"
@@ -108,7 +114,9 @@ public class BusinessPythonIterationTest {
             .body
             .get(0);
     assertEquals("ITERATE", loop.kind);
-    assertEquals("UNKNOWN", loop.body.get(0).kind);
+    assertEquals("ASSIGN", loop.body.get(0).kind);
+    assertEquals("+", loop.body.get(0).expr.operator);
+    assertEquals("part", loop.body.get(0).expr.args.get(1).name);
     assertEquals("YIELD", loop.body.get(1).kind);
   }
 

@@ -26,9 +26,21 @@ public final class BusinessPythonAnalysis {
   public static BusinessFlow.Program adapt(
       List<SourceFile> files, Cancel cancel, BusinessPolicy policy, PythonSyntax.Cache syntax) {
     BusinessFlow.Program program = new BusinessFlow.Program();
+    boolean standardJsonUnambiguous = true;
     for (SourceFile file : files) {
       cancel.check();
-      new Adapter(file, cancel, program, policy).parse(syntax.parse(file, cancel));
+      String path = file.path.replace('\\', '/');
+      // Source roots and PYTHONPATH are operator-controlled. Any scanned namesake may
+      // shadow the standard library, so do not guess which root wins import resolution.
+      if (path.equals("json.py")
+          || path.endsWith("/json.py")
+          || path.equals("json/__init__.py")
+          || path.endsWith("/json/__init__.py")) standardJsonUnambiguous = false;
+    }
+    for (SourceFile file : files) {
+      cancel.check();
+      new Adapter(file, cancel, program, policy, standardJsonUnambiguous)
+          .parse(syntax.parse(file, cancel));
     }
     return program;
   }
@@ -61,15 +73,22 @@ public final class BusinessPythonAnalysis {
     final Cancel cancel;
     final BusinessFlow.Program program;
     final BusinessPolicy policy;
+    final boolean standardJsonUnambiguous;
     final List<BusinessFlow.Function> functions = new ArrayList<BusinessFlow.Function>();
     int visits;
     boolean unsupported;
 
-    Adapter(SourceFile file, Cancel cancel, BusinessFlow.Program program, BusinessPolicy policy) {
+    Adapter(
+        SourceFile file,
+        Cancel cancel,
+        BusinessFlow.Program program,
+        BusinessPolicy policy,
+        boolean standardJsonUnambiguous) {
       this.file = file;
       this.cancel = cancel;
       this.program = program;
       this.policy = policy;
+      this.standardJsonUnambiguous = standardJsonUnambiguous;
     }
 
     void check(int depth) {
@@ -426,7 +445,38 @@ public final class BusinessPythonAnalysis {
       if ("Expr_stmt".equals(k)) {
         List<ParserRuleContext> parts = directs(n, "Testlist_star_expr");
         ParserRuleContext ann = direct(n, "Annassign");
-        if (parts.size() == 2 && identifier(text(parts.get(0))) && direct(n, "Augassign") == null) {
+        ParserRuleContext augmented = direct(n, "Augassign");
+        if (parts.size() == 1
+            && augmented != null
+            && "+=".equals(text(augmented))
+            && identifier(text(parts.get(0)))) {
+          ParserRuleContext rhs = direct(n, "Testlist");
+          if (rhs == null || !linearExpression(rhs, 0)) {
+            out.add(unknown(n, scope, true, depth + 1));
+            return;
+          }
+          BusinessFlow.Stmt add = statement("ASSIGN", n);
+          add.orderUncertain = false;
+          add.target = text(parts.get(0));
+          add.expr = expr("BINARY", n);
+          add.expr.operator = "+";
+          BusinessFlow.Expr previous = expr("NAME", parts.get(0));
+          previous.name = add.target;
+          add.expr.args.add(previous);
+          add.expr.args.add(expression(rhs, scope, depth + 1));
+          out.add(add);
+        } else if (parts.size() == 2 && !identifier(text(parts.get(0))) && augmented == null) {
+          BusinessFlow.Expr target = expression(parts.get(0), scope, depth + 1);
+          if ("MEMBER".equals(target.kind) && "dict-key".equals(target.operator)) {
+            target.kind = "PUT_MEMBER";
+            target.args.add(expression(parts.get(1), scope, depth + 1));
+            BusinessFlow.Stmt put = statement("EXPR", n);
+            put.expr = target;
+            out.add(put);
+          } else out.add(unknown(n, scope, true, depth + 1));
+        } else if (parts.size() == 2
+            && identifier(text(parts.get(0)))
+            && direct(n, "Augassign") == null) {
           assignment(n, text(parts.get(0)), parts.get(1), scope, out, depth + 1);
         } else if (parts.size() == 1
             && ann != null
@@ -643,10 +693,15 @@ public final class BusinessPythonAnalysis {
       }
       if ("Or_test".equals(k) || "And_test".equals(k)) {
         if (cs.size() == 1) return expression(cs.get(0), scope, depth + 1);
-        BusinessFlow.Expr e = expr("BINARY", n);
-        e.operator = "Or_test".equals(k) ? "or" : "and";
-        for (ParserRuleContext c : cs) e.args.add(expression(c, scope, depth + 1));
-        return e;
+        BusinessFlow.Expr value = expression(cs.get(0), scope, depth + 1);
+        for (int i = 1; i < cs.size(); i++) {
+          BusinessFlow.Expr binary = expr("BINARY", n);
+          binary.operator = "Or_test".equals(k) ? "or" : "and";
+          binary.args.add(value);
+          binary.args.add(expression(cs.get(i), scope, depth + 1));
+          value = binary;
+        }
+        return value;
       }
       if ("Comparison".equals(k) && cs.size() > 1) {
         if (cs.size() != 3) return unsupportedExpr(n, scope, depth + 1);
@@ -722,7 +777,29 @@ public final class BusinessPythonAnalysis {
           }
           if ("CALL".equals(call.kind) && call.receiver == null)
             bindLocalCall(call, path, scope, n.getStart().getTokenIndex());
-          if (call.symbol.length() == 0 && call.localTargetId.length() == 0) unsupported = true;
+          if ("CALL".equals(call.kind)
+              && call.symbol.isEmpty()
+              && "MEMBER".equals(value.kind)
+              && "get".equals(value.name)
+              && call.argNames.size() == call.args.size()
+              && !call.argNames.contains("default")
+              && (call.args.size() == 1 || call.args.size() == 2)) {
+            boolean positional = true;
+            for (String name : call.argNames) positional &= name.isEmpty();
+            if (positional) {
+              call.kind = "DICT_GET";
+              call.receiver = value.receiver;
+            }
+          }
+          if ("CALL".equals(call.kind)
+              && "json.loads".equals(call.symbol)
+              && standardJsonUnambiguous
+              && policy.contractsForSymbol(call.symbol).isEmpty()
+              && call.args.size() == 1
+              && call.argNames.get(0).isEmpty()) call.kind = "JSON_LOADS";
+          if ("CALL".equals(call.kind)
+              && call.symbol.length() == 0
+              && call.localTargetId.length() == 0) unsupported = true;
           value = call;
           path = "";
           receiver = true;
@@ -737,6 +814,7 @@ public final class BusinessPythonAnalysis {
           if (key != null && "LITERAL".equals(key.kind) && key.literal instanceof String) {
             sub = expr("MEMBER", trailer);
             sub.name = (String) key.literal;
+            sub.operator = "dict-key";
             sub.receiver = value;
           } else {
             sub = expr("UNKNOWN", trailer);
@@ -800,6 +878,7 @@ public final class BusinessPythonAnalysis {
     BusinessFlow.Expr dictionary(ParserRuleContext atom, Scope scope, int depth) {
       ParserRuleContext items = direct(atom, "Dictorsetmaker");
       BusinessFlow.Expr out = expr("MAP", atom);
+      out.name = "dict";
       if (items == null) return out;
       if (!has(items, ":") || has(items, "**") || direct(items, "Comp_for") != null)
         return unsupportedExpr(atom, scope, depth + 1);

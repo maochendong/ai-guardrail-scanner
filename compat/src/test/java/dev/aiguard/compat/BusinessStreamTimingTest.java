@@ -654,7 +654,7 @@ public class BusinessStreamTimingTest {
         BusinessPythonAnalysis.adapt(
             Arrays.asList(new SourceFile("workflow.py", code)), NEVER, policy);
     BusinessStreamTiming r = BusinessStreamTiming.analyze(p, policy, NEVER);
-    has(r, 6, 7, "RELEASE_PRECEDES_MAPPED_CHECK", "unknown");
+    has(r, 6, 7, "RELEASE_PRECEDES_MAPPED_CHECK", "checked-value-derived-from-release");
     noAccepted(r);
     assertEquals("candidate", r.sites.get(0).get("assurance"));
     assertEquals("open", r.sites.get(0).get("failureMode"));

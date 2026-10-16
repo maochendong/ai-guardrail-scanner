@@ -95,7 +95,7 @@ def verify_policy(report):
 
 transcript=[];summary={};stable_reports={}
 try:
-    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.8.0'},'capabilities':{'experimentalApi':True}})
+    init=rpc('initialize',{'clientInfo':{'name':'ai_guardrail_integration_test','version':'0.9.0'},'capabilities':{'experimentalApi':True}})
     p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
     started=rpc('thread/start',{'cwd':str(ROOT),'ephemeral':True},timeout=60)
     tid=started['thread']['id']
@@ -108,7 +108,7 @@ try:
     assert len(server['tools'])==5
     rules=tool('guardrail_rules',{})
     assert len(rules)==len({r['id'] for r in rules})==33
-    assert server['serverInfo']['version']=='0.8.0'
+    assert server['serverInfo']['version']=='0.9.0'
     rejected=tool('guardrail_scan_start',{'repository':'/'},True)
     invalid=tool('guardrail_scan_status',{'scanId':'not-a-scan-id'},True)
     summary={'client':'Codex app-server stdio / mcpServer/tool/call','server':server.get('serverInfo'),'discoveredTools':list(server['tools']),'ruleCount':len(rules),'profile':args.profile,'outsideRootRejected':rejected,'invalidScanIdRejected':invalid,'projects':[]}
@@ -123,9 +123,9 @@ try:
         results={fmt:tool('guardrail_scan_result',{'scanId':scanid,'format':fmt}) for fmt in ['json','markdown','sarif']}
         documents={fmt:verified_report_content(r,fmt,s,installed_output,name) for fmt,r in results.items()}
         report=json.loads(documents['json']);sarif=json.loads(documents['sarif'])
-        assert report['schemaVersion']=='1.7'
-        assert report['ruleSetVersion']=='java-python-guardrail-v9'
-        assert report['runtime']['scannerVersion']=='0.8.0'
+        assert report['schemaVersion']=='1.8'
+        assert report['ruleSetVersion']=='java-python-guardrail-v10'
+        assert report['runtime']['scannerVersion']=='0.9.0'
         assert report['runtime']['javaVersion'].startswith(('1.7.','1.8.'))
         verify_policy(report)
         assert s['policy']==report['policy']

@@ -261,13 +261,17 @@ public class BusinessPythonCallBindingTest {
   }
 
   @Test
-  public void ordinaryCalculationOnlyMakesItsValuesUnknown() {
+  public void ordinaryAdditionRetainsOperandsWithoutClaimingSynchronousValueEquality() {
     BusinessFlow.Function function =
         function(
             adapt("def forward(chunk):\n    full = ''\n    full += chunk\n    return full\n"),
             ".forward");
     assertFalse(function.executionUncertain);
-    assertEquals("UNKNOWN", function.body.get(1).kind);
+    assertEquals("ASSIGN", function.body.get(1).kind);
+    assertEquals("BINARY", function.body.get(1).expr.kind);
+    assertEquals("+", function.body.get(1).expr.operator);
+    assertEquals("full", function.body.get(1).expr.args.get(0).name);
+    assertEquals("chunk", function.body.get(1).expr.args.get(1).name);
     assertFalse(function.body.get(1).orderUncertain);
   }
 

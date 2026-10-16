@@ -21,6 +21,7 @@ public final class BusinessFlow {
   public static final class Function {
     /** Unique source-definition identity; unlike symbol/arity, this separates overloads. */
     public String id = "";
+
     /** Async/decorated or otherwise unresolved execution cannot establish synchronous timing. */
     public boolean executionUncertain;
 
@@ -32,7 +33,11 @@ public final class BusinessFlow {
   }
 
   public static final class Expr {
-    /** NAME, CALL, NEW, MEMBER, MAP, LITERAL, UNARY, BINARY, COMPOSITE or UNKNOWN. */
+    /**
+     * NAME, CALL, NEW, MEMBER, MAP, PUT_MEMBER, DICT_GET, JSON_LOADS, LITERAL, UNARY, BINARY,
+     * COMPOSITE or UNKNOWN. MAP.name distinguishes dict/map/object; field updates carry
+     * receiver/name and one argument, with operator=void for source setters.
+     */
     public String kind, name = "", symbol = "", operator = "", path = "";
 
     public Object literal;
@@ -59,8 +64,10 @@ public final class BusinessFlow {
 
     public int line = 1;
     public Expr expr;
+
     /** For UNKNOWN statements only: adapter-confirmed ordinary computations may set false. */
     public boolean orderUncertain = true;
+
     public final List<Stmt> body = new ArrayList<Stmt>();
     public final List<Stmt> otherwise = new ArrayList<Stmt>();
     public final List<List<Stmt>> handlers = new ArrayList<List<Stmt>>();

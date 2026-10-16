@@ -14,19 +14,24 @@ import java.util.Set;
 public final class BusinessJavaAnalysis {
   private final JavaGraph graph;
   private final Cancel cancel;
+  private final BusinessPolicy policy;
   private final BusinessFlow.Program program = new BusinessFlow.Program();
   private final Set<String> diagnostics = new HashSet<String>();
   private final Set<String> duplicateTypes = new HashSet<String>();
+  private final Map<String, JavaSyntax.Type> sourceTypes =
+      new java.util.HashMap<String, JavaSyntax.Type>();
   private int remaining = 150000;
 
-  private BusinessJavaAnalysis(JavaGraph graph, Cancel cancel) {
+  private BusinessJavaAnalysis(JavaGraph graph, Cancel cancel, BusinessPolicy policy) {
     this.graph = graph;
     this.cancel = cancel;
+    this.policy = policy;
     Set<String> types = new HashSet<String>();
     for (Unit unit : graph.units)
       for (JavaSyntax.Type type : unit.types) {
         cancel.check();
         if (!types.add(type.qualifiedName)) duplicateTypes.add(type.qualifiedName);
+        sourceTypes.put(type.qualifiedName, type);
       }
   }
 
@@ -46,11 +51,11 @@ public final class BusinessJavaAnalysis {
       cancel.check();
       if (file.path.endsWith(".java")) units.add(syntax.parse(file, cancel));
     }
-    return adapt(new JavaGraph(units, cancel), cancel);
+    return new BusinessJavaAnalysis(new JavaGraph(units, cancel), cancel, policy).run();
   }
 
   public static BusinessFlow.Program adapt(JavaGraph graph, Cancel cancel) {
-    return new BusinessJavaAnalysis(graph, cancel).run();
+    return new BusinessJavaAnalysis(graph, cancel, BusinessPolicy.generic()).run();
   }
 
   private BusinessFlow.Program run() {
@@ -77,7 +82,12 @@ public final class BusinessJavaAnalysis {
       }
       program.functions.add(function);
       try {
-        if (method.rootNode == null) function.body.add(statement("UNKNOWN", method.node));
+        BusinessFlow.Expr constructed = constructorValue(method);
+        if (constructed != null) {
+          BusinessFlow.Stmt returned = statement("RETURN", method.node);
+          returned.expr = constructed;
+          function.body.add(returned);
+        } else if (method.rootNode == null) function.body.add(statement("UNKNOWN", method.node));
         else statements(method.rootNode, function.body, method, 0);
       } catch (Limit exhausted) {
         incompleteFrom(method);
@@ -350,6 +360,8 @@ public final class BusinessJavaAnalysis {
         result.args.add(expression(arg, depth + 1));
         result.argNames.add("");
       }
+      // Explicit operator semantics take precedence over structural convenience summaries.
+      if (!policy.contractsForSymbol(result.symbol).isEmpty()) return result;
       if (result.symbol.equals("java.util.Map#of")
           && !result.bindingUncertain
           && edge.reasons.contains("EXTERNAL_TYPE")
@@ -371,7 +383,8 @@ public final class BusinessJavaAnalysis {
           result.args.clear();
           result.argNames.clear();
         }
-      } else if (result.symbol.equals("java.util.Map#get")
+      } else if (mapType(result.symbol.substring(0, Math.max(0, result.symbol.indexOf('#'))))
+          && node.name.equals("get")
           && !result.bindingUncertain
           && edge.reasons.contains("EXTERNAL_TYPE")
           && result.receiver != null
@@ -381,6 +394,46 @@ public final class BusinessJavaAnalysis {
         result.name = stringKey(node.args.get(0));
         result.args.clear();
         result.argNames.clear();
+      }
+      if (!result.bindingUncertain
+          && edge.reasons.contains("EXTERNAL_TYPE")
+          && mapType(result.symbol.substring(0, Math.max(0, result.symbol.indexOf('#'))))
+          && result.receiver != null
+          && node.args.size() == 2
+          && node.name.equals("put")
+          && stringKey(node.args.get(0)) != null) {
+        result.kind = "PUT_MEMBER";
+        result.name = stringKey(node.args.get(0));
+        result.args.remove(0);
+        result.argNames.clear();
+      }
+      if (!edge.unknown && !edge.candidate && edge.targets.size() == 1 && result.receiver != null) {
+        Method target = edge.targets.get(0);
+        Node body = soleStatement(target.rootNode);
+        if (body != null
+            && body.kind.equals("RETURN")
+            && target.params.isEmpty()
+            && body.args.size() == 1) {
+          Node field = ownField(body.args.get(0), target);
+          if (field != null) {
+            result.kind = "MEMBER";
+            result.name = field.name;
+            result.localTargetId = "";
+          }
+        } else if (body != null
+            && body.kind.equals("ASSIGN")
+            && body.name.equals("=")
+            && target.params.size() == 1
+            && target.returnType.equals("void")
+            && graph.declaration(body.initializer) == target.params.get(0).node) {
+          Node field = ownField(body.receiver, target);
+          if (field != null) {
+            result.kind = "PUT_MEMBER";
+            result.name = field.name;
+            result.operator = "void";
+            result.localTargetId = "";
+          }
+        }
       }
       return result;
     }
@@ -418,6 +471,23 @@ public final class BusinessJavaAnalysis {
           result.args.add(expression(arg, depth + 1));
           result.argNames.add("");
         }
+        if (!policy.contractsForSymbol(result.symbol).isEmpty()) return result;
+        if ((type.equals("java.util.HashMap") || type.equals("java.util.LinkedHashMap"))
+            && node.args.isEmpty()
+            && sourceType(type) == null) result.kind = "MAP";
+        JavaSyntax.Type owner = sourceType(type);
+        Method matched = null;
+        int matches = 0;
+        if (owner != null && !duplicateTypes.contains(type))
+          for (Method method : owner.methods)
+            if (method.name.equals(owner.name)
+                && method.returnType.isEmpty()
+                && method.params.size() == node.args.size()) {
+              matched = method;
+              matches++;
+            }
+        if (matches == 1 && constructorValue(matched) != null)
+          result.localTargetId = key(matched.node);
         return result;
       }
     }
@@ -464,6 +534,81 @@ public final class BusinessJavaAnalysis {
     if (node.args.isEmpty() && node.receiver == null)
       for (Node child : node.children)
         if (isExpression(child)) result.args.add(expression(child, depth + 1));
+    return result;
+  }
+
+  private boolean mapType(String type) {
+    return (type.equals("java.util.Map")
+            || type.equals("java.util.HashMap")
+            || type.equals("java.util.LinkedHashMap"))
+        && sourceType(type) == null;
+  }
+
+  private JavaSyntax.Type sourceType(String name) {
+    return sourceTypes.get(name);
+  }
+
+  private Node soleStatement(Node body) {
+    while (body != null
+        && (body.kind.equals("BLOCK") || body.kind.equals("EXPR_STMT"))
+        && body.children.size() == 1) body = body.children.get(0);
+    return body;
+  }
+
+  private Node ownField(Node access, Method method) {
+    if (access == null) return null;
+    Node field = graph.declaration(access);
+    if (field == null
+        || !field.kind.equals("FIELD")
+        || field.ownerType != method.owner
+        || field.modifiers.contains("static")) return null;
+    if (access.kind.equals("NAME")) return field;
+    return access.kind.equals("FIELD")
+            && access.receiver != null
+            && access.receiver.kind.equals("NAME")
+            && access.receiver.name.equals("this")
+        ? field
+        : null;
+  }
+
+  /** Only a complete, side-effect-free source constructor supplies object field identities. */
+  private BusinessFlow.Expr constructorValue(Method method) {
+    if (!method.name.equals(method.owner.name)
+        || !method.returnType.isEmpty()
+        || method.rootNode == null
+        || !method.owner.superTypes.isEmpty()
+        || method.owner.instanceInitializer != null
+        || method.owner.staticInitializer != null) return null;
+    BusinessFlow.Expr result = expr("MAP", method.node);
+    result.name = "object";
+    for (Node field : method.owner.fields) {
+      if (field.modifiers.contains("static")) continue;
+      if (field.initializer != null) return null;
+      BusinessFlow.Expr zero = expr("LITERAL", field);
+      zero.literal =
+          field.type.equals("boolean")
+              ? Boolean.FALSE
+              : java.util.Arrays.asList("byte", "short", "int", "long", "float", "double", "char")
+                      .contains(field.type)
+                  ? Long.valueOf(0)
+                  : null;
+      result.members.put(field.name, zero);
+    }
+    for (Node child : method.rootNode.children) {
+      Node assignment = soleStatement(child);
+      if (assignment == null || !assignment.kind.equals("ASSIGN") || !assignment.name.equals("="))
+        return null;
+      Node field = ownField(assignment.receiver, method);
+      if (field == null) return null;
+      BusinessFlow.Expr value = expression(assignment.initializer, 0);
+      if (!value.kind.equals("NAME") && !value.kind.equals("LITERAL")) return null;
+      if (value.kind.equals("NAME")) {
+        boolean parameter = false;
+        for (Param param : method.params) parameter |= key(param.node).equals(value.name);
+        if (!parameter) return null;
+      }
+      result.members.put(field.name, value);
+    }
     return result;
   }
 

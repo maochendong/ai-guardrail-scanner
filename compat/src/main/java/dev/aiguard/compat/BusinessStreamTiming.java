@@ -14,6 +14,7 @@ public final class BusinessStreamTiming {
               "ZERO_OR_ONE_ITERATION_ONLY",
               "SYNCHRONOUS_LOCAL_FLOW_ONLY",
               "VALUE_IDENTITY_NOT_CONTENT_EQUALITY",
+              "DERIVATION_IS_NOT_CONTENT_OR_GUARD_EQUIVALENCE",
               "UNMAPPED_RELEASES_NOT_EXCLUDED",
               "NOT_NETWORK_DELIVERY_OR_ALL_CHUNKS",
               "CANDIDATE_CHECK_IS_NOT_SECURITY_ASSURANCE"));
@@ -118,10 +119,14 @@ public final class BusinessStreamTiming {
   private static final class Value {
     int id;
     boolean opaque, knownLiteral, reviewed = true, sense = true;
+    boolean concatenation;
+    int predicate = -1;
+    String structure = "";
     Object literal;
     Boolean bool;
     Check decision, pending;
     final Set<String> labels = new HashSet<String>();
+    final Set<Integer> derivedFrom = new HashSet<Integer>();
     final Map<String, Value> members = new HashMap<String, Value>();
 
     Value copy() {
@@ -131,19 +136,24 @@ public final class BusinessStreamTiming {
       v.knownLiteral = knownLiteral;
       v.reviewed = reviewed;
       v.sense = sense;
+      v.concatenation = concatenation;
+      v.predicate = predicate;
+      v.structure = structure;
       v.literal = literal;
       v.bool = bool;
       v.decision = decision;
       v.pending = pending;
       v.labels.addAll(labels);
+      v.derivedFrom.addAll(derivedFrom);
       v.members.putAll(members);
       return v;
     }
   }
 
   private static final class Ref {
-    int id;
-    boolean known;
+    int id, originId;
+    boolean known, dependencyKnown;
+    final Set<Integer> derivedFrom = new HashSet<Integer>();
   }
 
   private static final class Check {
@@ -153,6 +163,7 @@ public final class BusinessStreamTiming {
     BusinessPolicy.Contract contract;
     String assurance;
     List<Ref> values;
+    final Map<Integer, Integer> predicateIds = new HashMap<Integer, Integer>();
   }
 
   private static final class Release {
@@ -166,7 +177,11 @@ public final class BusinessStreamTiming {
   private static final class State {
     final Map<String, Value> vars = new HashMap<String, Value>();
     final Set<Integer> invalidated = new HashSet<Integer>(), accepted = new HashSet<Integer>();
+    final Set<Integer> dependencyInvalidated = new HashSet<Integer>();
     final Map<Integer, Boolean> conditions = new HashMap<Integer, Boolean>();
+    final Map<Integer, Set<Integer>> acceptedPredicates = new HashMap<Integer, Set<Integer>>();
+    final Map<Integer, Map<String, Value>> members = new HashMap<Integer, Map<String, Value>>();
+    final Map<Integer, Integer> versions = new HashMap<Integer, Integer>();
     final List<Check> checks = new ArrayList<Check>();
     Release first;
     String stopped = "";
@@ -179,8 +194,14 @@ public final class BusinessStreamTiming {
       State s = new State();
       s.vars.putAll(vars);
       s.invalidated.addAll(invalidated);
+      s.dependencyInvalidated.addAll(dependencyInvalidated);
       s.accepted.addAll(accepted);
       s.conditions.putAll(conditions);
+      for (Map.Entry<Integer, Set<Integer>> entry : acceptedPredicates.entrySet())
+        s.acceptedPredicates.put(entry.getKey(), new HashSet<Integer>(entry.getValue()));
+      for (Map.Entry<Integer, Map<String, Value>> entry : members.entrySet())
+        s.members.put(entry.getKey(), new HashMap<String, Value>(entry.getValue()));
+      s.versions.putAll(versions);
       s.checks.addAll(checks);
       s.first = first;
       s.stopped = stopped;
@@ -218,8 +239,16 @@ public final class BusinessStreamTiming {
     List<Ref> refs = new ArrayList<Ref>();
     for (Value v : values) {
       Ref ref = new Ref();
-      ref.id = v.id;
+      ref.id = state.versions.containsKey(v.id) ? state.versions.get(v.id) : v.id;
+      ref.originId = v.id;
       ref.known = !v.opaque && !state.invalidated.contains(v.id);
+      ref.dependencyKnown = !v.opaque && !state.dependencyInvalidated.contains(v.id);
+      if (!state.dependencyInvalidated.contains(v.id)) {
+        boolean valid = true;
+        for (Integer source : v.derivedFrom)
+          if (state.dependencyInvalidated.contains(source)) valid = false;
+        if (valid) ref.derivedFrom.addAll(v.derivedFrom);
+      }
       refs.add(ref);
     }
     return refs;
@@ -280,6 +309,7 @@ public final class BusinessStreamTiming {
             // aggregates.
             candidate.accepted.clear();
             candidate.conditions.clear();
+            candidate.acceptedPredicates.clear();
             if (!candidate.stopped.isEmpty()) next.add(candidate);
             else next.addAll(walk(statement.otherwise, Arrays.asList(candidate), depth + 1));
           }
@@ -397,6 +427,7 @@ public final class BusinessStreamTiming {
     state.orderOpaque |= order;
     state.accepted.clear();
     state.conditions.clear();
+    state.acceptedPredicates.clear();
   }
 
   private List<State> branch(BusinessFlow.Expr expr, State state, boolean desired, int depth) {
@@ -406,18 +437,30 @@ public final class BusinessStreamTiming {
         && "UNARY".equals(expr.kind)
         && Arrays.asList("!", "not").contains(expr.operator)
         && expr.args.size() == 1) return branch(expr.args.get(0), state, !desired, depth + 1);
-    if (expr != null && "BINARY".equals(expr.kind) && expr.args.size() == 2) {
+    if (expr != null && "BINARY".equals(expr.kind) && expr.args.size() >= 2) {
       boolean and = Arrays.asList("&&", "and").contains(expr.operator);
       boolean or = Arrays.asList("||", "or").contains(expr.operator);
       if (and || or) {
         List<State> result = new ArrayList<State>();
+        List<State> pending = Arrays.asList(state);
         if (and == desired) {
-          for (State left : branch(expr.args.get(0), state, desired, depth + 1))
-            result.addAll(branch(expr.args.get(1), left, desired, depth + 1));
+          for (BusinessFlow.Expr operand : expr.args) {
+            List<State> next = new ArrayList<State>();
+            for (State candidate : pending)
+              next.addAll(branch(operand, candidate, desired, depth + 1));
+            pending = bound(next);
+          }
+          return pending;
         } else {
-          result.addAll(branch(expr.args.get(0), state.copy(), desired, depth + 1));
-          for (State left : branch(expr.args.get(0), state, !desired, depth + 1))
-            result.addAll(branch(expr.args.get(1), left, desired, depth + 1));
+          for (BusinessFlow.Expr operand : expr.args) {
+            List<State> next = new ArrayList<State>();
+            for (State candidate : pending) {
+              result.addAll(branch(operand, candidate.copy(), desired, depth + 1));
+              next.addAll(branch(operand, candidate, !desired, depth + 1));
+            }
+            result = bound(result);
+            pending = bound(next);
+          }
         }
         return bound(result);
       }
@@ -430,9 +473,24 @@ public final class BusinessStreamTiming {
     if (valid && state.conditions.containsKey(value.id) && state.conditions.get(value.id) != base)
       return Collections.emptyList();
     if (valid) state.conditions.put(value.id, base);
-    if (valid && value.decision != null && base == value.decision.contract.accept)
-      state.accepted.add(value.decision.id);
+    if (valid && value.decision != null) acceptPredicate(value, base, state);
     return Arrays.asList(state);
+  }
+
+  private void acceptPredicate(Value value, boolean accepted, State state) {
+    Check check = value.decision;
+    if (value.predicate < 0) {
+      if (accepted == check.contract.accept) state.accepted.add(check.id);
+      return;
+    }
+    if (accepted != check.contract.decisionPredicates.get(value.predicate).accept) return;
+    Set<Integer> predicates = state.acceptedPredicates.get(check.id);
+    if (predicates == null) {
+      predicates = new HashSet<Integer>();
+      state.acceptedPredicates.put(check.id, predicates);
+    }
+    predicates.add(value.predicate);
+    if (predicates.size() == check.contract.decisionPredicates.size()) state.accepted.add(check.id);
   }
 
   private Value eval(BusinessFlow.Expr expr, State state, int depth) {
@@ -448,8 +506,9 @@ public final class BusinessStreamTiming {
       return value;
     }
     if ("LITERAL".equals(expr.kind)) return literal(expr.literal);
-    if ("MAP".equals(expr.kind)) {
+    if ("MAP".equals(expr.kind) || "DTO".equals(expr.kind)) {
       Value value = fresh();
+      value.structure = expr.name.isEmpty() ? "map" : expr.name;
       for (Map.Entry<String, BusinessFlow.Expr> member : expr.members.entrySet())
         value.members.put(member.getKey(), eval(member.getValue(), state, depth + 1));
       return value;
@@ -490,11 +549,87 @@ public final class BusinessStreamTiming {
     Value receiver = expr.receiver == null ? null : eval(expr.receiver, state, depth + 1);
     List<Value> args = new ArrayList<Value>();
     for (BusinessFlow.Expr arg : expr.args) args.add(eval(arg, state, depth + 1));
+    if ("PUT_MEMBER".equals(expr.kind)) {
+      if (receiver != null
+          && !receiver.opaque
+          && !state.invalidated.contains(receiver.id)
+          && !receiver.structure.isEmpty()
+          && args.size() == 1
+          && !expr.name.isEmpty()) {
+        Map<String, Value> members = new HashMap<String, Value>(members(receiver, state));
+        Value previous = members.put(expr.name, args.get(0));
+        state.members.put(receiver.id, members);
+        changeVersions(receiver.id, state);
+        return "void".equals(expr.operator) || previous == null ? literal(null) : previous;
+      }
+      if (receiver != null) invalidate(receiver, state, 0);
+      uncertain(state, false);
+      exceptional(state);
+      return unknown();
+    }
+    if ("DICT_GET".equals(expr.kind)) {
+      if (receiver != null
+          && "dict".equals(receiver.structure)
+          && !receiver.opaque
+          && !state.invalidated.contains(receiver.id)
+          && !args.isEmpty()
+          && args.size() <= 2) {
+        Value key = args.get(0);
+        if (key.knownLiteral
+            && key.literal instanceof String
+            && !key.opaque
+            && !state.invalidated.contains(key.id)) {
+          Value member = members(receiver, state).get(key.literal);
+          return member == null ? (args.size() == 2 ? args.get(1) : literal(null)) : member;
+        }
+      }
+      if (receiver != null) invalidate(receiver, state, 0);
+      uncertain(state, false);
+      exceptional(state);
+      return unknown();
+    }
+    if ("BINARY".equals(expr.kind) && "+".equals(expr.operator) && args.size() == 2) {
+      Value left = args.get(0), right = args.get(1);
+      if (!state.invalidated.contains(left.id)
+          && ((left.knownLiteral && left.literal instanceof String) || left.concatenation)
+          && !state.invalidated.contains(right.id)) {
+        // This is a source-level dependency, never equality of the element and aggregate.
+        // Dynamic operators can change content, so this fact cannot qualify a Guard release.
+        Value aggregate = unknown();
+        aggregate.concatenation = true;
+        aggregate.reviewed = left.reviewed && right.reviewed;
+        aggregate.labels.addAll(left.labels);
+        aggregate.labels.addAll(right.labels);
+        if (!left.opaque) aggregate.derivedFrom.add(left.id);
+        aggregate.derivedFrom.addAll(left.derivedFrom);
+        if (!right.opaque) aggregate.derivedFrom.add(right.id);
+        aggregate.derivedFrom.addAll(right.derivedFrom);
+        if (aggregate.derivedFrom.size() > 128) {
+          aggregate.derivedFrom.clear();
+          aggregate.concatenation = false;
+          truncated = true;
+        }
+        if (!(knownString(left, state) && knownString(right, state))) {
+          // A source label does not prove a string type. Dynamic operators may mutate an
+          // operand or throw. Preserve the syntactic dependency, never old Guard approval.
+          uncertain(state, false);
+          dynamicMutation(left, state, 0);
+          dynamicMutation(right, state, 0);
+          exceptional(state);
+        }
+        return aggregate;
+      }
+    }
     if ("MEMBER".equals(expr.kind)) {
+      Value projected = projectDecision(expr, receiver, args, state);
+      if (projected != null) return projected;
       if (receiver != null && !receiver.opaque && !state.invalidated.contains(receiver.id)) {
-        Value member = receiver.members.get(expr.name);
+        Value member = members(receiver, state).get(expr.name);
         if (member != null) return member;
       }
+      if (receiver != null) invalidate(receiver, state, 0);
+      uncertain(state, false);
+      exceptional(state);
       return unknown();
     }
     if ("UNARY".equals(expr.kind)
@@ -548,8 +683,15 @@ public final class BusinessStreamTiming {
       if (binding != null) {
         BusinessPolicy.Contract contract = binding.contract;
         args = binding.args;
-        exceptional(state);
         boolean candidate = expr.bindingUncertain || "candidate".equals(contract.assurance);
+        if (candidate && "transform".equals(contract.kind)) {
+          // An unqualified preserve/redaction claim does not promise a pure call. Even
+          // when its return is ignored, the old input approval cannot survive a mutation.
+          uncertain(state, false);
+          if (receiver != null) invalidate(receiver, state, 0);
+          for (Value argument : args) invalidate(argument, state, 0);
+        }
+        exceptional(state);
         if ("source".equals(contract.kind)) {
           Value v = fresh();
           v.labels.add(contract.label);
@@ -567,10 +709,25 @@ public final class BusinessStreamTiming {
             v.literal = null;
             v.bool = null;
             v.members.clear();
+            v.structure = "";
+            v.derivedFrom.clear();
+            v.concatenation = false;
             v.decision = v.pending = null;
           }
           v.reviewed &= !candidate;
-          if (candidate) v.opaque = true;
+          if (candidate) {
+            v.id = ++serial;
+            v.opaque = true;
+            v.knownLiteral = false;
+            v.literal = null;
+            v.bool = null;
+            v.members.clear();
+            v.structure = "";
+            v.derivedFrom.clear();
+            v.concatenation = false;
+            v.decision = v.pending = null;
+            v.predicate = -1;
+          }
           return v;
         }
         if ("check".equals(contract.kind)) {
@@ -589,7 +746,7 @@ public final class BusinessStreamTiming {
           state.checks.add(c);
           Value v = fresh();
           if ("normal-return".equals(contract.mode)) state.accepted.add(c.id);
-          else if (contract.decisionSymbol.isEmpty()) v.decision = c;
+          else if (contract.decisionPredicates.isEmpty()) v.decision = c;
           else v.pending = c;
           return v;
         }
@@ -607,15 +764,77 @@ public final class BusinessStreamTiming {
       }
       return result;
     }
+    // New or unsupported expression kinds may execute code or throw. In particular,
+    // JSON_LOADS cannot silently erase a catch-path release while retaining approval
+    // on the normal path. The strict scanner JSON parser also rejects inputs that a
+    // target runtime may accept, so no definite non-return is inferred here.
+    uncertain(state, false);
+    if (receiver != null) invalidate(receiver, state, 0);
     Value value = unknown();
-    for (Value arg : args) value.labels.addAll(arg.labels);
+    for (Value arg : args) {
+      value.labels.addAll(arg.labels);
+      invalidate(arg, state, 0);
+    }
+    exceptional(state);
     return value;
   }
 
   private void invalidate(Value value, State state, int depth) {
     if (depth > 64) throw new Limit();
     state.invalidated.add(value.id);
-    for (Value member : value.members.values()) invalidate(member, state, depth + 1);
+    state.dependencyInvalidated.add(value.id);
+    for (Value member : members(value, state).values()) invalidate(member, state, depth + 1);
+  }
+
+  private void dynamicMutation(Value value, State state, int depth) {
+    if (depth > 64) throw new Limit();
+    if (value.knownLiteral) return;
+    state.invalidated.add(value.id);
+    for (Value member : members(value, state).values()) dynamicMutation(member, state, depth + 1);
+  }
+
+  private boolean knownString(Value value, State state) {
+    return value.knownLiteral
+        && value.literal instanceof String
+        && !value.opaque
+        && !state.invalidated.contains(value.id);
+  }
+
+  /** A nested write changes every reachable containing object, never an unrelated scalar. */
+  private void changeVersions(int changed, State state) {
+    Map<Integer, Set<Integer>> parents = new HashMap<Integer, Set<Integer>>();
+    Deque<Value> pending = new ArrayDeque<Value>(state.vars.values());
+    Set<Integer> visited = new HashSet<Integer>();
+    while (!pending.isEmpty()) {
+      tick();
+      Value owner = pending.removeLast();
+      if (!visited.add(owner.id)) continue;
+      for (Value member : members(owner, state).values()) {
+        Set<Integer> containers = parents.get(member.id);
+        if (containers == null) {
+          containers = new HashSet<Integer>();
+          parents.put(member.id, containers);
+        }
+        containers.add(owner.id);
+        pending.add(member);
+      }
+    }
+    Deque<Integer> affected = new ArrayDeque<Integer>();
+    affected.add(changed);
+    visited.clear();
+    while (!affected.isEmpty()) {
+      tick();
+      int id = affected.removeLast();
+      if (!visited.add(id)) continue;
+      state.versions.put(id, ++serial);
+      Set<Integer> containers = parents.get(id);
+      if (containers != null) affected.addAll(containers);
+    }
+  }
+
+  private Map<String, Value> members(Value value, State state) {
+    Map<String, Value> updated = state.members.get(value.id);
+    return updated == null ? value.members : updated;
   }
 
   private boolean knownBoolean(Value value, State state) {
@@ -630,15 +849,30 @@ public final class BusinessStreamTiming {
             : args.size() == 1 && args.get(0).pending != null ? args.get(0) : null;
     if (owner == null) return null;
     BusinessPolicy.Contract c = owner.pending.contract;
-    if (!c.decisionSymbol.equals(expr.symbol)
-        || (c.decisionArg < 0
-            ? owner != receiver || !args.isEmpty()
-            : args.size() != 1 || owner != args.get(0))) return null;
+    int predicate = -1;
+    for (int i = 0; i < c.decisionPredicates.size(); i++) {
+      BusinessPolicy.DecisionPredicate leaf = c.decisionPredicates.get(i);
+      if (leaf.symbol.equals(expr.symbol)
+          && (leaf.arg < 0
+              ? owner == receiver && args.isEmpty()
+              : args.size() == 1 && owner == args.get(0))) {
+        predicate = i;
+        break;
+      }
+    }
+    if (predicate < 0) return null;
     exceptional(state);
     Value v = fresh();
-    if (!owner.opaque && !state.invalidated.contains(owner.id) && !expr.bindingUncertain)
+    if (!owner.opaque && !state.invalidated.contains(owner.id) && !expr.bindingUncertain) {
+      Integer identity = owner.pending.predicateIds.get(predicate);
+      if (identity == null) {
+        identity = v.id;
+        owner.pending.predicateIds.put(predicate, identity);
+      }
+      v.id = identity;
       v.decision = owner.pending;
-    else v.opaque = true;
+      v.predicate = predicate;
+    } else v.opaque = true;
     return v;
   }
 
@@ -717,7 +951,9 @@ public final class BusinessStreamTiming {
     for (Value value : values) {
       for (String member : c.valuePath) {
         Value projected =
-            value.opaque || state.invalidated.contains(value.id) ? null : value.members.get(member);
+            value.opaque || state.invalidated.contains(value.id)
+                ? null
+                : members(value, state).get(member);
         if (projected == null) {
           value = unknown();
           qualified = false;
@@ -768,6 +1004,11 @@ public final class BusinessStreamTiming {
 
   private String binding(List<Ref> released, List<Ref> checked) {
     if (released.isEmpty() || checked.isEmpty()) return "unknown";
+    if (released.size() == 1
+        && checked.size() == 1
+        && released.get(0).dependencyKnown
+        && checked.get(0).derivedFrom.contains(released.get(0).originId))
+      return "checked-value-derived-from-release";
     for (Ref r : released) if (!r.known) return "unknown";
     for (Ref r : checked) if (!r.known) return "unknown";
     if (released.size() != checked.size()) return "different";
