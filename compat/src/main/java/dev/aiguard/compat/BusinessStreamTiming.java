@@ -404,10 +404,16 @@ public final class BusinessStreamTiming {
     Set<State> selected = Collections.newSetFromMap(new IdentityHashMap<State, Boolean>());
     Set<String> boundaries = new HashSet<String>();
     for (State state : states) {
+      // Return boundaries are materialized only after walk. Keep their source
+      // locations distinct while retaining whole states, never mixing approvals.
       String boundary =
           state.stopped
               + ":"
-              + (state.first == null ? "" : state.first.path + ":" + state.first.line);
+              + (state.first != null
+                  ? state.first.path + ":" + state.first.line
+                  : "RETURN".equals(state.stopped) && state.returnStatement != null
+                      ? state.returnStatement.path + ":" + state.returnStatement.line
+                      : "");
       if (kept.size() < 64 && boundaries.add(boundary)) {
         kept.add(state);
         selected.add(state);

@@ -787,6 +787,32 @@ public class BusinessStreamTimingTest {
     noAccepted(r);
   }
 
+  @Test
+  public void cappedPathsRetainDistinctPendingReturnBoundariesWithoutBorrowingChecks()
+      throws Exception {
+    BusinessFlow.Stmt guarded = stmt("TRY", 3, null);
+    for (int i = 0; i < 9; i++)
+      guarded.body.add(branch(name("flag" + i), assign("value" + i, literal(i))));
+    guarded.body.add(check("edge.normal", 15, "stream"));
+    guarded.body.add(stmt("RETURN", 20, name("stream")));
+    guarded.handlers.add(Arrays.asList(stmt("RETURN", 30, name("stream"))));
+    guarded.handlers.add(Arrays.asList(stmt("RETURN", 40, name("stream"))));
+    BusinessStreamTiming result =
+        BusinessStreamTiming.analyze(
+            program("workflow.answer", source(), guarded), policy(), NEVER);
+    assertTrue(result.truncated);
+    has(result, 20, 15, "ACCEPTED_CHECK_PRECEDES_RELEASE", "same");
+    for (int line : Arrays.asList(30, 40)) {
+      boolean found = false;
+      for (Map<String, Object> site : result.sites)
+        if (Integer.valueOf(line).equals(site.get("line"))) {
+          found = true;
+          assertNotEquals("ACCEPTED_CHECK_PRECEDES_RELEASE", site.get("ordering"));
+        }
+      assertTrue("Missing exception return at " + line + ": " + result.sites, found);
+    }
+  }
+
   private BusinessFlow.Function expensiveFunction(String symbol) {
     BusinessFlow.Function f = program(symbol).functions.get(0);
     BusinessFlow.Stmt computation = stmt("EXPR", 1, literal(true));
