@@ -35,6 +35,7 @@ def fixture():
                   'controlReviewSites': [], 'controlReviewSitesTruncated': False,
                   'callContextSites': [], 'callContextSitesTruncated': False,
                   'streamTimingSites': [], 'streamTimingSitesTruncated': False,
+                  'collectionReviewSites': [], 'collectionReviewSitesTruncated': False,
                   'reviewActions': copy.deepcopy(actions), 'manualReviewRequired': True}
     counts = {'MISSING_MAPPING': 0, 'INSUFFICIENT_EVIDENCE': 0, 'UNSUPPORTED': 0}
     coverage = dict.fromkeys(['contractDefinitions', 'matchedDefinitions', 'matchedCallSites',
@@ -120,6 +121,37 @@ def semantic_fixture():
 class ReportSchemaTest(unittest.TestCase):
     def verify(self, data):
         matrix.verify_unknowns(*data, context='fixture')
+
+    def test_collection_schema_requires_unknown_and_explicit_coverage_limit(self):
+        from report_schema import COLLECTION_FIELDS, validate_collection
+        site = dict(appendPath='Example.java', appendLine=10, checkPath='Example.java', checkLine=8,
+                    control='guard', assurance='candidate', failureMode='unknown',
+                    checkedElementPath=['payload'], elementBinding='same-element',
+                    subjectBinding='not-required', decisionBinding='not-established',
+                    outputBinding='same-collection', coverage='UNKNOWN',
+                    limitations=['NO_ALL_ITERATIONS_PROOF'],
+                    unknownReasons=[{'code': 'COLLECTION_ALL_ITEMS_UNPROVEN'}])
+        section = '\n'.join('- 集合关系 {}：{}'.format(key, '[' + ', '.join(site[key]) + ']'
+                           if isinstance(site[key], list) else site[key]) for key in COLLECTION_FIELDS)
+        validate_collection(site, section, 'fixture')
+        for field, value in [('coverage', 'OBSERVED'), ('limitations', []),
+                             ('unknownReasons', []), ('checkLine', 0), ('outputBinding', 'unknown')]:
+            invalid = copy.deepcopy(site)
+            invalid[field] = value
+            with self.assertRaises(AssertionError, msg=field):
+                validate_collection(invalid, section, 'fixture')
+
+    def test_collection_sarif_allowlist_preserves_relations_without_source_values(self):
+        from report_schema import exported_detail
+        site = dict(ruleId='BANK-GUARD-001', disposition='UNKNOWN', path='Example.java', line=12,
+                    appendPath='Example.java', appendLine=10, checkPath='Example.java', checkLine=8,
+                    coverage='UNKNOWN', limitations=['NO_ALL_ITERATIONS_PROOF'],
+                    sourceValue='PRIVATE_VALUE', symbol='PRIVATE_SYMBOL')
+        result = exported_detail({'collectionReviewSites': [site]})['collectionReviewSites'][0]
+        self.assertEqual(10, result['appendLine'])
+        self.assertEqual('UNKNOWN', result['coverage'])
+        self.assertNotIn('sourceValue', result)
+        self.assertNotIn('symbol', result)
 
     def test_semantic_provenance_round_trip(self):
         self.verify(semantic_fixture())
@@ -473,7 +505,7 @@ class ReportSchemaTest(unittest.TestCase):
                                  for node in tree.body), name)
             values = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
                       and isinstance(node.value, str)}
-            self.assertTrue({'0.9.0', '1.8', 'java-python-guardrail-v10'} <= values, name)
+            self.assertTrue({'0.10.0', '1.9', 'java-python-guardrail-v11'} <= values, name)
             self.assertTrue({'0.5.1', '1.4', 'java-python-guardrail-v6'}.isdisjoint(values), name)
 
 

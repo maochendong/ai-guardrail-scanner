@@ -34,15 +34,19 @@ public final class BusinessFlow {
 
   public static final class Expr {
     /**
-     * NAME, CALL, NEW, MEMBER, MAP, PUT_MEMBER, DICT_GET, JSON_LOADS, LITERAL, UNARY, BINARY,
-     * COMPOSITE or UNKNOWN. MAP.name distinguishes dict/map/object; field updates carry
-     * receiver/name and one argument, with operator=void for source setters.
+     * NAME, CALL, NEW, MEMBER, MAP, MAP_COPY, PUT_MEMBER, DICT_GET, JSON_LOADS, COLLECTION_NEW,
+     * COLLECTION_APPEND, COLLECTION_SIZE, LITERAL, UNARY, BINARY, COMPOSITE or UNKNOWN. MAP.name
+     * distinguishes dict/map/object; field updates carry receiver/name and one argument, with
+     * operator=void for source setters.
      */
     public String kind, name = "", symbol = "", operator = "", path = "";
 
     public Object literal;
     public Expr receiver;
     public boolean bindingUncertain;
+
+    /** Generated accessors may have source-supported shape without a verified runtime body. */
+    public boolean generatedMethodUncertain;
 
     /** A resolved source definition, never inferred by looking up symbol/arity. */
     public String localTargetId = "";
@@ -59,7 +63,7 @@ public final class BusinessFlow {
   }
 
   public static final class Stmt {
-    /** ASSIGN, EXPR, IF, RETURN, YIELD, THROW, TRY, ITERATE, or UNKNOWN. */
+    /** ASSIGN, EXPR, IF, RETURN, YIELD, THROW, TRY, ITERATE, CONTINUE, BREAK or UNKNOWN. */
     public String kind, target = "", path = "";
 
     public int line = 1;

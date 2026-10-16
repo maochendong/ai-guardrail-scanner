@@ -47,6 +47,8 @@ public final class BusinessAnalysis {
   private int localDepth, callOperations;
   private List<Map<String, Object>> streamTimingSites = Collections.emptyList();
   private boolean streamTimingSitesTruncated;
+  private Map<String, List<Map<String, Object>>> collectionReviewSites = Collections.emptyMap();
+  private boolean collectionReviewSitesTruncated;
   private final Set<String> callSites = new HashSet<String>(),
       modelSourceSites = new HashSet<String>(),
       boundarySites = new HashSet<String>(),
@@ -184,6 +186,10 @@ public final class BusinessAnalysis {
       BusinessStreamTiming timing = BusinessStreamTiming.analyze(program, policy, cancel);
       analysis.streamTimingSites = timing.sites;
       analysis.streamTimingSitesTruncated = timing.truncated;
+      BusinessCollectionAnalysis collections =
+          BusinessCollectionAnalysis.analyze(program, policy, cancel);
+      analysis.collectionReviewSites = collections.sitesByRule;
+      analysis.collectionReviewSitesTruncated = collections.truncated;
     }
     analysis.finish();
     return analysis;
@@ -201,12 +207,19 @@ public final class BusinessAnalysis {
     boolean knownLiteral;
     boolean iterationElement;
     boolean structured;
+    // A decoded JSON value has stable identity but an open, non-enumerated schema.
+    boolean jsonUnknown;
+    String jsonNodeKind = "";
+    Object jsonScalar;
     String structureKind = "";
     Object literal;
     BusinessPolicy.Contract pending;
     Proof pendingProof;
     final Set<String> labels = new HashSet<String>();
     final Map<String, Value> members = new LinkedHashMap<String, Value>();
+    // A get/default result may alias its container's field or its default, without
+    // being provably equal to either. These edges only invalidate mutation proofs.
+    final List<Value> mutationSources = new ArrayList<Value>();
     final List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     final List<Map<String, Object>> trace = new ArrayList<Map<String, Object>>();
   }
@@ -224,6 +237,8 @@ public final class BusinessAnalysis {
     final Map<String, Value> vars = new HashMap<String, Value>();
     // Immutable object versions keep field writes local to each explored path.
     final Map<String, Value> objects = new HashMap<String, Value>();
+    // Lazy reads are path-local observations, not object writes. Inner maps are immutable.
+    final Map<String, Map<String, Value>> jsonFields = new HashMap<String, Map<String, Value>>();
     final Map<String, Proof> proofs = new LinkedHashMap<String, Proof>();
     // Observed checks aid diagnosis even when opaque arguments prevent granting a proof.
     final Map<String, Proof> checks = new LinkedHashMap<String, Proof>();
@@ -241,6 +256,7 @@ public final class BusinessAnalysis {
       State copy = new State();
       copy.vars.putAll(vars);
       copy.objects.putAll(objects);
+      copy.jsonFields.putAll(jsonFields);
       copy.proofs.putAll(proofs);
       copy.checks.putAll(checks);
       copy.reasons.addAll(reasons);
@@ -605,17 +621,44 @@ public final class BusinessAnalysis {
         if (value.sensitive && !value.redacted) map.redacted = false;
         inherit(map, value);
       }
+      if (expr.generatedMethodUncertain)
+        return unverifiedGenerated(expr, state, new ArrayList<Value>(map.members.values()));
       return map;
     }
-    Value receiver = expr.receiver == null ? null : eval(expr.receiver, state, depth + 1);
+    // Python evaluates the assigned value before the subscription target/key.
+    Value stored = null;
+    boolean pythonStore = "PUT_MEMBER".equals(expr.kind) && "dict-key".equals(expr.operator);
+    if (pythonStore && !expr.args.isEmpty())
+      stored = eval(expr.args.get(expr.args.size() - 1), state, depth + 1);
+    // JACKSON_PARSE is emitted only for a source-proven private final default mapper.
+    // Its unmodeled instance field is not an arbitrary runtime getter invocation.
+    Value receiver =
+        expr.receiver == null || "JACKSON_PARSE".equals(expr.kind)
+            ? null
+            : eval(expr.receiver, state, depth + 1);
     if (receiver != null) receiver = current(receiver, state);
     if ("MEMBER".equals(expr.kind)) {
+      if (expr.generatedMethodUncertain)
+        return unverifiedGenerated(
+            expr,
+            state,
+            receiver == null ? Collections.<Value>emptyList() : Arrays.asList(receiver));
       Value decision = projection(expr, receiver, Collections.<Value>emptyList(), state);
       if (decision != null) return decision;
-      if (receiver != null
-          && !state.invalidated.contains(receiver.id)
-          && receiver.members.containsKey(expr.name))
-        return current(receiver.members.get(expr.name), state);
+      Value key =
+          expr.args.size() == 1 ? eval(expr.args.get(0), state, depth + 1) : literal(expr.name);
+      if (!state.stopped.isEmpty()) return unknown(expr);
+      String selected = memberKey(receiver, key, state);
+      if (receiver != null && receiver.jsonUnknown && !"dict-key".equals(expr.operator))
+        selected = null;
+      if (receiver != null && !state.invalidated.contains(receiver.id) && selected != null) {
+        Value field = receiver.members.get(selected);
+        if (field != null) return current(field, state);
+        if (receiver.jsonUnknown && "dict-key".equals(expr.operator)) {
+          exceptional(state);
+          return jsonField(receiver, selected, state, expr);
+        }
+      }
       Value unresolved = unknown(expr);
       if (receiver != null) {
         inherit(unresolved, receiver);
@@ -625,20 +668,35 @@ public final class BusinessAnalysis {
       return unresolved;
     }
     List<Value> args = new ArrayList<Value>();
-    for (BusinessFlow.Expr arg : expr.args) args.add(eval(arg, state, depth + 1));
+    for (int i = 0; i < expr.args.size(); i++)
+      args.add(
+          pythonStore && i == expr.args.size() - 1
+              ? stored
+              : eval(expr.args.get(i), state, depth + 1));
     if (!state.stopped.isEmpty()) return unknown(expr);
+    if (expr.kind.startsWith("JACKSON_")) return jackson(expr, receiver, args, state);
     if ("PUT_MEMBER".equals(expr.kind)) {
+      if (expr.generatedMethodUncertain) {
+        List<Value> touched = new ArrayList<Value>(args);
+        if (receiver != null) touched.add(receiver);
+        return unverifiedGenerated(expr, state, touched);
+      }
+      Value key = args.size() == 2 && pythonStore ? args.get(0) : literal(expr.name);
+      String selected = memberKey(receiver, key, state);
       if (receiver != null
           && receiver.structured
           && receiver.pending == null
           && !state.invalidated.contains(receiver.id)
-          && args.size() == 1
-          && !expr.name.isEmpty()) {
+          && (args.size() == 1 || pythonStore && args.size() == 2)
+          && selected != null) {
+        if (receiver.jsonUnknown
+            || "list".equals(receiver.structureKind)
+            || "json-array".equals(receiver.structureKind)) exceptional(state);
         Value updated = copy(receiver);
-        Value old = updated.members.put(expr.name, args.get(0));
+        Value old = updated.members.put(selected, args.get(args.size() - 1));
         if (updated.members.size() > 128) throw new Limit();
         // A changed envelope is a new checked value, while unchanged child identities survive.
-        invalidateProofsFor(state, receiver.id);
+        invalidateProofsFor(state, receiver);
         refreshStructure(updated, state);
         state.objects.put(receiver.id, updated);
         return "void".equals(expr.operator) || old == null ? literal(null) : current(old, state);
@@ -652,14 +710,36 @@ public final class BusinessAnalysis {
     if ("DICT_GET".equals(expr.kind)
         && receiver != null
         && receiver.structured
-        && "dict".equals(receiver.structureKind)
+        && ("dict".equals(receiver.structureKind) || receiver.jsonUnknown)
         && !state.invalidated.contains(receiver.id)
         && (args.size() == 1 || args.size() == 2)
         && args.get(0).knownLiteral
         && args.get(0).literal instanceof String
         && !args.get(0).opaque) {
-      Value field = receiver.members.get((String) args.get(0).literal);
-      return field != null ? current(field, state) : args.size() == 2 ? args.get(1) : literal(null);
+      String selected = memberKey(receiver, args.get(0), state);
+      Value field = receiver.members.get(selected);
+      if (field == null) field = cachedJsonField(receiver, selected, state);
+      if (receiver.jsonUnknown) exceptional(state);
+      if (field != null) return current(field, state);
+      Value fallback = args.size() == 2 ? args.get(1) : literal(null);
+      if (!receiver.jsonUnknown) return fallback;
+      // Unknown presence is a distinct selected result, never equal to [] or the default.
+      String getKey = "get:" + selected + ":default:" + fallback.id;
+      Value selectedValue = cachedJsonField(receiver, getKey, state);
+      if (selectedValue == null) {
+        selectedValue = decodedJson(expr, receiver);
+        selectedValue.mutationSources.add(receiver);
+        selectedValue.mutationSources.add(fallback);
+        inherit(selectedValue, fallback);
+        selectedValue.opaque |= fallback.opaque;
+        selectedValue.opaque |= state.invalidated.contains(fallback.id);
+        if (!builtinJsonValue(fallback, state, new HashSet<String>(), 0)) {
+          selectedValue.structured = false;
+          selectedValue.jsonUnknown = false;
+        }
+        cacheJsonField(receiver, getKey, selectedValue, state);
+      }
+      return current(selectedValue, state);
     }
     if ("DICT_GET".equals(expr.kind)) {
       List<Value> touched = new ArrayList<Value>(args);
@@ -686,11 +766,16 @@ public final class BusinessAnalysis {
           return unknown(expr);
         }
       }
+      // str/bytes subclasses may override methods used by the standard decoder. Preserve
+      // possible input effects and catch paths, then establish a distinct decoded identity.
+      Value input = args.size() == 1 ? args.get(0) : unknown(expr);
       invalidateCall(state, args);
       exceptional(state);
-      Value unresolved = unknown(expr);
-      for (Value arg : args) inherit(unresolved, arg);
-      return unresolved;
+      Value decoded = decodedJson(expr, input);
+      // A successful standard decode constructs new builtins even when the input's
+      // previous value identity was unknown. Provenance reasons remain attached.
+      decoded.opaque = false;
+      return decoded;
     }
     if ("UNARY".equals(expr.kind)
         && args.size() == 1
@@ -786,6 +871,9 @@ public final class BusinessAnalysis {
             value.literal = null;
             value.members.clear();
             value.structured = false;
+            value.jsonUnknown = false;
+            value.jsonNodeKind = "";
+            value.jsonScalar = null;
             value.structureKind = "";
             value.trusted = false;
             value.decision = null;
@@ -799,6 +887,9 @@ public final class BusinessAnalysis {
             value.id = "v" + (++serial);
             value.members.clear();
             value.structured = false;
+            value.jsonUnknown = false;
+            value.jsonNodeKind = "";
+            value.jsonScalar = null;
             value.structureKind = "";
             value.knownLiteral = false;
             value.literal = null;
@@ -1059,6 +1150,10 @@ public final class BusinessAnalysis {
         && left.sensitive == right.sensitive
         && left.iterationElement == right.iterationElement
         && left.members.equals(right.members)
+        && left.jsonUnknown == right.jsonUnknown
+        && left.structureKind.equals(right.structureKind)
+        && left.jsonNodeKind.equals(right.jsonNodeKind)
+        && Objects.equals(left.jsonScalar, right.jsonScalar)
         && left.labels.equals(right.labels)
         && left.reasons.equals(right.reasons)
         && left.sense == right.sense
@@ -1110,6 +1205,8 @@ public final class BusinessAnalysis {
   private void applyEffects(State caller, State exit) {
     caller.objects.clear();
     caller.objects.putAll(exit.objects);
+    caller.jsonFields.clear();
+    caller.jsonFields.putAll(exit.jsonFields);
     caller.uncertain |= exit.uncertain;
     caller.epoch = exit.epoch;
     caller.proofs.clear();
@@ -1579,6 +1676,23 @@ public final class BusinessAnalysis {
     for (Map<String, Object> item : source.trace) append(value.trace, item);
   }
 
+  private Value unverifiedGenerated(BusinessFlow.Expr expr, State state, List<Value> touched) {
+    Value value = unknown(expr);
+    for (Value source : touched) inherit(value, source);
+    reason(
+        value.reasons,
+        "INSUFFICIENT_EVIDENCE",
+        "GENERATED_METHOD_CONFIGURATION_UNVERIFIED",
+        "The generated constructor or accessor has no closed, verified default configuration;"
+            + " candidate field relationships cannot establish a value-bound security proof.");
+    for (Map<String, Object> item : value.reasons)
+      if (!state.reasons.contains(item)) state.reasons.add(item);
+    state.uncertain = true;
+    invalidateCall(state, touched);
+    exceptional(state);
+    return value;
+  }
+
   private void egress(BusinessFlow.Expr expr, List<Value> data, State state) {
     boolean sensitive = false, redacted = true;
     for (Value raw : data) {
@@ -1613,15 +1727,24 @@ public final class BusinessAnalysis {
     if (depth > 64) throw new Limit();
     if (!touched.add(value.id)) return;
     for (Value member : value.members.values()) collectTouched(member, touched, state, depth + 1);
+    for (Value source : value.mutationSources) collectTouched(source, touched, state, depth + 1);
+    Map<String, Value> observed = state.jsonFields.get(value.id);
+    if (observed != null)
+      for (Value member : observed.values()) collectTouched(member, touched, state, depth + 1);
   }
 
   private void snapshotObjects(Value value, Map<String, Value> snapshots, State state, int depth) {
     if (depth > 64) throw new Limit();
     value = current(value, state);
-    if (!value.structured || snapshots.containsKey(value.id)) return;
+    if (snapshots.containsKey(value.id)) return;
+    if (!value.structured && value.mutationSources.isEmpty()) return;
     snapshots.put(value.id, value);
+    for (Value source : value.mutationSources) snapshotObjects(source, snapshots, state, depth + 1);
     for (Value member : value.members.values())
       snapshotObjects(member, snapshots, state, depth + 1);
+    Map<String, Value> observed = state.jsonFields.get(value.id);
+    if (observed != null)
+      for (Value member : observed.values()) snapshotObjects(member, snapshots, state, depth + 1);
   }
 
   private boolean freshProof(Proof proof, State state) {
@@ -1641,15 +1764,23 @@ public final class BusinessAnalysis {
     for (Map.Entry<String, Value> member : value.members.entrySet())
       resolved.members.put(
           member.getKey(), materialized(member.getValue(), state, seen, depth + 1));
+    Map<String, Value> observed = state.jsonFields.get(value.id);
+    if (observed != null)
+      for (Map.Entry<String, Value> member : observed.entrySet())
+        if (!resolved.members.containsKey(member.getKey()))
+          resolved.members.put(
+              member.getKey(), materialized(member.getValue(), state, seen, depth + 1));
     refreshStructure(resolved, state);
     return resolved;
   }
 
   private void refreshStructure(Value value, State state) {
-    value.labels.clear();
-    value.sensitive = false;
-    value.redacted = true;
-    value.opaque = false;
+    if (!value.jsonUnknown) {
+      value.labels.clear();
+      value.sensitive = false;
+      value.redacted = true;
+      value.opaque = false;
+    } else value.redacted = false;
     for (Value item : value.members.values()) {
       Value member = item;
       inherit(value, member);
@@ -1663,17 +1794,61 @@ public final class BusinessAnalysis {
     return updated == null ? value : updated;
   }
 
-  private void invalidateProofsFor(State state, String id) {
+  private void invalidateProofsFor(State state, Value changed) {
+    Set<String> changedIds = new HashSet<String>();
+    changedIds.add(changed.id);
+    for (Value source : changed.mutationSources) collectTouched(source, changedIds, state, 0);
+    // A write through an uncertain get/default alias cannot update the alternate
+    // view exactly. Invalidate that view's shape as well as already-granted proofs.
+    if (!changed.mutationSources.isEmpty()) state.invalidated.addAll(changedIds);
+    Set<String> examined = new HashSet<String>();
+    for (Value value : state.vars.values())
+      invalidateAliasViews(value, changedIds, state, examined, 0);
+    for (Map<String, Value> observed : state.jsonFields.values())
+      for (Value value : observed.values())
+        invalidateAliasViews(value, changedIds, state, examined, 0);
     for (Map<String, Proof> proofs : Arrays.asList(state.proofs, state.checks))
       for (Iterator<Map.Entry<String, Proof>> it = proofs.entrySet().iterator(); it.hasNext(); ) {
         Proof proof = it.next().getValue();
         Set<String> touched = new HashSet<String>();
         for (Value checked : proof.checked) collectTouched(checked, touched, state, 0);
-        if (touched.contains(id)) {
+        if (!Collections.disjoint(touched, changedIds)) {
           state.invalidatedProofs.add(proof);
           it.remove();
         }
       }
+  }
+
+  private void invalidateAliasViews(
+      Value raw, Set<String> changedIds, State state, Set<String> seen, int depth) {
+    if (depth > 64) throw new Limit();
+    Value value = current(raw, state);
+    if (!seen.add(value.id)) return;
+    if (!value.mutationSources.isEmpty()) {
+      Set<String> reach = new HashSet<String>();
+      collectTouched(value, reach, state, 0);
+      if (!Collections.disjoint(reach, changedIds))
+        collectOwned(value, state.invalidated, state, new HashSet<String>(), 0);
+    }
+    for (Value member : value.members.values())
+      invalidateAliasViews(member, changedIds, state, seen, depth + 1);
+    Map<String, Value> fields = state.jsonFields.get(value.id);
+    if (fields != null)
+      for (Value member : fields.values())
+        invalidateAliasViews(member, changedIds, state, seen, depth + 1);
+  }
+
+  private void collectOwned(
+      Value raw, Set<String> result, State state, Set<String> seen, int depth) {
+    if (depth > 64) throw new Limit();
+    Value value = current(raw, state);
+    if (!seen.add(value.id)) return;
+    result.add(value.id);
+    for (Value member : value.members.values())
+      collectOwned(member, result, state, seen, depth + 1);
+    Map<String, Value> fields = state.jsonFields.get(value.id);
+    if (fields != null)
+      for (Value member : fields.values()) collectOwned(member, result, state, seen, depth + 1);
   }
 
   private void mergeObjects(State target, State other) {
@@ -1686,6 +1861,238 @@ public final class BusinessAnalysis {
         target.objects.remove(id);
       }
     }
+    // Keep only observations shared by both exits; one branch cannot prove field presence
+    // or a selected get/default result on its sibling branch.
+    for (Iterator<Map.Entry<String, Map<String, Value>>> it =
+            target.jsonFields.entrySet().iterator();
+        it.hasNext(); ) {
+      Map.Entry<String, Map<String, Value>> entry = it.next();
+      Map<String, Value> right = other.jsonFields.get(entry.getKey());
+      if (right == null) {
+        it.remove();
+        continue;
+      }
+      Map<String, Value> common = new LinkedHashMap<String, Value>();
+      for (Map.Entry<String, Value> field : entry.getValue().entrySet())
+        if (right.get(field.getKey()) == field.getValue())
+          common.put(field.getKey(), field.getValue());
+      entry.setValue(common);
+    }
+  }
+
+  private String memberKey(Value receiver, Value key, State state) {
+    if (key == null || !key.knownLiteral || key.opaque || state.invalidated.contains(key.id))
+      return null;
+    if (key.literal instanceof String) {
+      if (receiver != null
+          && ("json-array".equals(receiver.structureKind) || "list".equals(receiver.structureKind)))
+        return null;
+      return receiver != null && receiver.jsonUnknown ? "s:" + key.literal : (String) key.literal;
+    }
+    if (receiver == null
+        || !(receiver.jsonUnknown
+            || "json-array".equals(receiver.structureKind)
+            || "list".equals(receiver.structureKind))
+        || !(key.literal instanceof Byte
+            || key.literal instanceof Short
+            || key.literal instanceof Integer
+            || key.literal instanceof Long
+            || key.literal instanceof java.math.BigInteger)) return null;
+    try {
+      int index = new java.math.BigDecimal(key.literal.toString()).intValueExact();
+      return index >= 0 && index < 128 ? "i:" + index : null;
+    } catch (ArithmeticException invalid) {
+      return null;
+    } catch (NumberFormatException invalid) {
+      return null;
+    }
+  }
+
+  private Value decodedJson(BusinessFlow.Expr expr, Value source) {
+    Value value = fresh(expr);
+    value.structured = true;
+    value.jsonUnknown = true;
+    value.structureKind = "json";
+    value.opaque = source.opaque;
+    value.mutationSources.addAll(source.mutationSources);
+    inherit(value, source);
+    append(
+        value.trace,
+        location(
+            expr,
+            "value",
+            "A decoded JSON value has a new identity; input approval, identity trust and redaction"
+                + " are not transferred to decoded fields."));
+    return value;
+  }
+
+  private boolean builtinJsonValue(Value raw, State state, Set<String> seen, int depth) {
+    if (depth > 32) return false;
+    Value value = current(raw, state);
+    if (value.opaque || state.invalidated.contains(value.id)) return false;
+    if (value.knownLiteral || value.jsonUnknown) return true;
+    if (!value.structured
+        || !("dict".equals(value.structureKind)
+            || "list".equals(value.structureKind)
+            || "json-array".equals(value.structureKind))
+        || !seen.add(value.id)) return false;
+    for (Value member : value.members.values())
+      if (!builtinJsonValue(member, state, seen, depth + 1)) return false;
+    return true;
+  }
+
+  private Value cachedJsonField(Value receiver, String key, State state) {
+    Map<String, Value> fields = state.jsonFields.get(receiver.id);
+    return fields == null ? null : fields.get(key);
+  }
+
+  private void cacheJsonField(Value receiver, String key, Value value, State state) {
+    Map<String, Value> fields = new LinkedHashMap<String, Value>();
+    Map<String, Value> previous = state.jsonFields.get(receiver.id);
+    if (previous != null) fields.putAll(previous);
+    if (fields.size() >= 128 && !fields.containsKey(key)) throw new Limit();
+    fields.put(key, value);
+    state.jsonFields.put(receiver.id, fields);
+  }
+
+  private Value jsonField(Value receiver, String key, State state, BusinessFlow.Expr expr) {
+    Value value = cachedJsonField(receiver, key, state);
+    if (value == null) {
+      value = decodedJson(expr, receiver);
+      cacheJsonField(receiver, key, value, state);
+    }
+    return current(value, state);
+  }
+
+  private Value jackson(BusinessFlow.Expr expr, Value receiver, List<Value> args, State state) {
+    exceptional(state);
+    if ("JACKSON_PARSE".equals(expr.kind) && args.size() == 1) {
+      Value input = args.get(0);
+      if (input.knownLiteral
+          && !input.opaque
+          && input.literal instanceof String
+          && ((String) input.literal).length() <= 65536) {
+        try {
+          return jacksonValue(Json.parse((String) input.literal), 0);
+        } catch (java.io.IOException unsupported) {
+          state.uncertain = true;
+          return unknown(expr);
+        }
+      }
+      Value node = decodedJson(expr, input);
+      node.jsonNodeKind = "unknown";
+      node.structureKind = "jackson-json";
+      node.opaque = false;
+      return node;
+    }
+    if (receiver == null
+        || receiver.jsonNodeKind.isEmpty()
+        || state.invalidated.contains(receiver.id)) return unknown(expr);
+    if ("JACKSON_TEXT".equals(expr.kind) && args.size() <= 1) {
+      Value fallback = args.isEmpty() ? null : args.get(0);
+      if (fallback != null
+          && (fallback.opaque
+              || !fallback.knownLiteral
+              || fallback.literal != null && !(fallback.literal instanceof String)))
+        return unknown(expr);
+      if (!"unknown".equals(receiver.jsonNodeKind) && !"number".equals(receiver.jsonNodeKind)) {
+        if (fallback != null
+            && ("missing".equals(receiver.jsonNodeKind) || "null".equals(receiver.jsonNodeKind)))
+          return fallback;
+        if ("string".equals(receiver.jsonNodeKind) || "boolean".equals(receiver.jsonNodeKind))
+          return literal(String.valueOf(receiver.jsonScalar));
+        return literal("null".equals(receiver.jsonNodeKind) ? "null" : "");
+      }
+      String cacheKey = "jackson-text:" + (fallback == null ? "none" : fallback.id);
+      Value text = cachedJsonField(receiver, cacheKey, state);
+      if (text == null) {
+        text = fresh(expr);
+        inherit(text, receiver);
+        text.opaque = receiver.opaque;
+        if (fallback != null) inherit(text, fallback);
+        append(
+            text.trace,
+            location(
+                expr,
+                "value",
+                "Jackson asText creates a string value; approval of its JsonNode or source JSON"
+                    + " text is not approval of this string."));
+        cacheJsonField(receiver, cacheKey, text, state);
+      }
+      return current(text, state);
+    }
+    if (args.size() != 1
+        || !args.get(0).knownLiteral
+        || args.get(0).opaque
+        || !(args.get(0).literal instanceof String)
+        || state.invalidated.contains(args.get(0).id)) return unknown(expr);
+    String key = (String) args.get(0).literal;
+    boolean has = "JACKSON_HAS".equals(expr.kind);
+    boolean get = "JACKSON_GET".equals(expr.kind);
+    boolean path = "JACKSON_PATH".equals(expr.kind);
+    if (!(has || get || path)) return unknown(expr);
+    if (!"unknown".equals(receiver.jsonNodeKind)) {
+      Value field = "object".equals(receiver.jsonNodeKind) ? receiver.members.get(key) : null;
+      if (has) return literal(Boolean.valueOf(field != null));
+      if (field != null) return current(field, state);
+      return get ? literal(null) : missingJackson();
+    }
+    // PATH may produce MissingNode, GET may produce null. Their values are not interchangeable.
+    String cacheKey = (has ? "jackson-has:" : get ? "jackson-get:" : "jackson-path:") + key;
+    Value field = cachedJsonField(receiver, cacheKey, state);
+    if (field == null) {
+      field = has ? fresh(expr) : decodedJson(expr, receiver);
+      inherit(field, receiver);
+      field.opaque |= receiver.opaque;
+      if (!has) {
+        field.jsonNodeKind = "unknown";
+        field.structureKind = "jackson-json";
+      }
+      cacheJsonField(receiver, cacheKey, field, state);
+    }
+    return current(field, state);
+  }
+
+  private Value missingJackson() {
+    Value value = fresh(null);
+    value.jsonNodeKind = "missing";
+    return value;
+  }
+
+  private Value jacksonValue(com.google.gson.JsonElement element, int depth) {
+    tick();
+    if (depth > 32) throw new Limit();
+    Value value = fresh(null);
+    if (element.isJsonNull()) {
+      value.jsonNodeKind = "null";
+      return value;
+    }
+    if (element.isJsonPrimitive()) {
+      com.google.gson.JsonPrimitive primitive = element.getAsJsonPrimitive();
+      value.jsonNodeKind =
+          primitive.isString() ? "string" : primitive.isBoolean() ? "boolean" : "number";
+      value.jsonScalar =
+          primitive.isString()
+              ? primitive.getAsString()
+              : primitive.isBoolean() ? primitive.getAsBoolean() : primitive.getAsString();
+      return value;
+    }
+    value.structured = true;
+    value.jsonNodeKind = element.isJsonArray() ? "array" : "object";
+    value.structureKind = element.isJsonArray() ? "jackson-array" : "jackson-dict";
+    if (element.isJsonArray()) {
+      int index = 0;
+      for (com.google.gson.JsonElement item : element.getAsJsonArray()) {
+        if (index >= 128) throw new Limit();
+        value.members.put("i:" + index++, jacksonValue(item, depth + 1));
+      }
+    } else
+      for (Map.Entry<String, com.google.gson.JsonElement> field :
+          element.getAsJsonObject().entrySet()) {
+        if (value.members.size() >= 128) throw new Limit();
+        value.members.put(field.getKey(), jacksonValue(field.getValue(), depth + 1));
+      }
+    return value;
   }
 
   private Value literal(Object object) {
@@ -1700,13 +2107,24 @@ public final class BusinessAnalysis {
     if (element.isJsonNull()) return literal(null);
     if (element.isJsonPrimitive()) {
       com.google.gson.JsonPrimitive p = element.getAsJsonPrimitive();
-      return p.isBoolean()
-          ? literal(p.getAsBoolean())
-          : p.isString() ? literal(p.getAsString()) : literal(p.getAsBigDecimal());
+      if (p.isBoolean()) return literal(p.getAsBoolean());
+      if (p.isString()) return literal(p.getAsString());
+      // The strict shared parser normalizes numeric tokens and loses Python int/float
+      // distinctions. Keep a stable value, not a literal that could prune a real path.
+      return fresh(null);
     }
     Value value = fresh(null);
-    if (!element.isJsonObject()) return unknown(null);
     value.structured = true;
+    if (element.isJsonArray()) {
+      value.structureKind = "json-array";
+      int index = 0;
+      for (com.google.gson.JsonElement item : element.getAsJsonArray()) {
+        if (index >= 128) throw new Limit();
+        value.members.put("i:" + index++, jsonValue(item, depth + 1));
+      }
+      return value;
+    }
+    if (!element.isJsonObject()) return unknown(null);
     value.structureKind = "dict";
     for (Map.Entry<String, com.google.gson.JsonElement> field :
         element.getAsJsonObject().entrySet()) {
@@ -1733,12 +2151,16 @@ public final class BusinessAnalysis {
     value.trace.addAll(source.trace);
     value.labels.addAll(source.labels);
     value.members.putAll(source.members);
+    value.mutationSources.addAll(source.mutationSources);
     value.reasons.addAll(source.reasons);
     value.pending = source.pending;
     value.pendingProof = source.pendingProof;
     value.knownLiteral = source.knownLiteral;
     value.iterationElement = source.iterationElement;
     value.structured = source.structured;
+    value.jsonUnknown = source.jsonUnknown;
+    value.jsonNodeKind = source.jsonNodeKind;
+    value.jsonScalar = source.jsonScalar;
     value.structureKind = source.structureKind;
     value.literal = source.literal;
     return value;
@@ -1793,7 +2215,10 @@ public final class BusinessAnalysis {
       for (Value value : data) {
         for (String member : contract.valuePath) {
           value = current(value, state);
-          Value next = state.invalidated.contains(value.id) ? null : value.members.get(member);
+          String selected = value.jsonUnknown ? "s:" + member : member;
+          Value next = state.invalidated.contains(value.id) ? null : value.members.get(selected);
+          if (next == null && !state.invalidated.contains(value.id))
+            next = cachedJsonField(value, selected, state);
           if (next == null) {
             Value missing = unknown(expr);
             inherit(missing, value);
@@ -2277,6 +2702,12 @@ public final class BusinessAnalysis {
       finding.put(
           "streamTimingSitesTruncated",
           BusinessPolicy.GUARD.equals(id) && streamTimingSitesTruncated);
+      finding.put(
+          "collectionReviewSites",
+          collectionReviewSites.containsKey(id)
+              ? collectionReviewSites.get(id)
+              : Collections.<Map<String, Object>>emptyList());
+      finding.put("collectionReviewSitesTruncated", collectionReviewSitesTruncated);
       semanticAssessments.add(finding);
       if (policy.ruleIds().contains(id)) assessments.add(finding);
     }

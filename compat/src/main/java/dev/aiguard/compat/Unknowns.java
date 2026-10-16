@@ -86,6 +86,7 @@ public final class Unknowns {
     List<Map<String, Object>> sites =
         new ArrayList<Map<String, Object>>(items(finding, "siteAssessments"));
     sites.addAll(items(finding, "controlReviewSites"));
+    sites.addAll(items(finding, "collectionReviewSites"));
     if (sites.isEmpty()) return;
     List<Map<String, Object>> actions = new ArrayList<Map<String, Object>>();
     List<String> locatedCodes = new ArrayList<String>();
@@ -138,6 +139,15 @@ public final class Unknowns {
                 "BIND_IDENTITY_ARGUMENT",
                 "应用研发与规则维护人员",
                 "确认 API 中承载用户或租户身份的实际参数或接收者字段，并将其与资源操作绑定；没有身份槽位时核实是否应补充接口约束。",
+                code,
+                locations);
+      } else if ("GENERATED_METHOD_CONFIGURATION_UNVERIFIED".equals(code)) {
+        action =
+            action(
+                "VERIFY_RUNTIME",
+                "VERIFY_GENERATED_METHOD_CONFIGURATION",
+                "应用构建与平台负责人",
+                "确认实际构建使用的 Lombok 版本、授权根外配置与生成访问器；提供生成源码或受控构建证据，不能仅凭注解名称认定默认方法已经生效。",
                 code,
                 locations);
       } else if ("IDENTITY_TRUST_UNVERIFIED".equals(code)) {

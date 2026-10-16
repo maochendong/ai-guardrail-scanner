@@ -215,6 +215,7 @@ public final class Inventory {
         || name.equals("build.gradle")
         || name.equals("build.gradle.kts")
         || name.equals("gradle.properties")
+        || name.equals("lombok.config")
         || name.startsWith("application")
             && (name.endsWith(".yml") || name.endsWith(".yaml") || name.endsWith(".properties"));
   }

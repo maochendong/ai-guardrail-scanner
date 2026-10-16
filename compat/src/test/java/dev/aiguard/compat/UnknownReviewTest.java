@@ -54,6 +54,21 @@ public class UnknownReviewTest {
   }
 
   @Test
+  public void externalGenerationConfigurationRequiresBuildEvidence() {
+    Map<String, Object> item = finding("GENERIC", "UNKNOWN", 12);
+    Unknowns.set(
+        item,
+        Unknowns.INSUFFICIENT_EVIDENCE,
+        "GENERATED_METHOD_CONFIGURATION_UNVERIFIED",
+        "Inherited configuration is outside scope.");
+    Map<String, Object> review = action(item, "VERIFY_GENERATED_METHOD_CONFIGURATION");
+    assertNotNull(review);
+    assertEquals("VERIFY_RUNTIME", review.get("kind"));
+    assertEquals(Boolean.TRUE, item.get("manualReviewRequired"));
+    assertEquals("UNKNOWN", item.get("disposition"));
+  }
+
+  @Test
   public void mappingReasonsReplaceDefaultsAndPostponeRuntimeAcceptance() {
     Map<String, Object> item = finding("BANK-IAM-001", "UNKNOWN", 12);
     Unknowns.set(item, Unknowns.MISSING_MAPPING, "SOURCE_UNMAPPED", "Map source.");

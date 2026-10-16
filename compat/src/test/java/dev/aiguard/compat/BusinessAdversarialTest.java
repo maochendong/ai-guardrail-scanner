@@ -415,11 +415,27 @@ public class BusinessAdversarialTest {
 
   @Test
   public void redactedAndRawCompositeCannotBeTreatedAsFullyRedacted() throws Exception {
-    paired(
-        BusinessPolicy.DATA,
-        "v=@s1()\nw=@r1(v)\n@t1([w,v])",
-        "Object v=@s1();Object w=@r1(v);@t1(new Object[]{w,v});",
-        "UNKNOWN");
+    // Native Python lists retain each element's data provenance. Java array
+    // construction is not modeled here, so it must still retain UNKNOWN.
+    for (boolean isJava : Arrays.asList(false, true)) {
+      BusinessAnalysis result = analyze(isJava, isJava
+          ? "Object v=@s1();Object w=@r1(v);@t1(new Object[]{w,v});"
+          : "v=@s1()\nw=@r1(v)\n@t1([w,v])", true);
+      boolean found = false;
+      for (Map<String, Object> item : result.assessments)
+        if (BusinessPolicy.DATA.equals(item.get("ruleId"))) {
+          found = true;
+          assertEquals(item.toString(), isJava ? "UNKNOWN" : "VIOLATED", item.get("disposition"));
+          assertNotEquals("OBSERVED", item.get("disposition"));
+        }
+      assertTrue("Missing DATA assessment", found);
+    }
+    BusinessAnalysis fullyRedacted = analyze(false, "v=@s1()\nw=@r1(v)\n@t1([w,w])", true);
+    Map<String, Object> redactedAssessment = null;
+    for (Map<String, Object> item : fullyRedacted.assessments)
+      if (BusinessPolicy.DATA.equals(item.get("ruleId"))) redactedAssessment = item;
+    assertNotNull(redactedAssessment);
+    assertEquals(redactedAssessment.toString(), "OBSERVED", redactedAssessment.get("disposition"));
   }
 
   @Test

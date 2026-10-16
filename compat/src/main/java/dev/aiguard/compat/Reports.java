@@ -272,6 +272,29 @@ public final class Reports {
         if (Boolean.TRUE.equals(a.get("controlReviewSitesTruncated")))
           out.append("- 限制：控制复核列表已截断；复核动作未覆盖全部控制调用。\n");
       }
+      for (Map<String, Object> site : optionalList(a, "collectionReviewSites")) {
+        out.append("\n集合复核 UNKNOWN：")
+            .append(escape(site.get("path")))
+            .append(" 第 ")
+            .append(escape(site.get("line")))
+            .append(" 行\n");
+        for (String key : collectionFields())
+          if (site.containsKey(key))
+            out.append("- 集合关系 ")
+                .append(key)
+                .append("：")
+                .append(escape(site.get(key)))
+                .append('\n');
+        for (Map<String, Object> reason : optionalList(site, "unknownReasons"))
+          out.append("- 集合复核原因 ")
+              .append(escape(reason.get("code")))
+              .append("：")
+              .append(escape(reason.get("explanation")))
+              .append('\n');
+        appendReview(out, site, "集合复核");
+      }
+      if (Boolean.TRUE.equals(a.get("collectionReviewSitesTruncated")))
+        out.append("- 限制：集合复核列表已截断；未展示的集合关系仍须复核。\n");
       appendAnalysisContext(out, a);
       for (Map<String, Object> e : list(a, "evidence"))
         out.append("- ")
@@ -570,6 +593,7 @@ public final class Reports {
             "siteAssessmentsTruncated",
             "callContextSitesTruncated",
             "streamTimingSitesTruncated",
+            "collectionReviewSitesTruncated",
             "semanticScope",
             "semanticCoverageIncomplete"))
       if (assessment.containsKey(key)) out.put(key, assessment.get(key));
@@ -603,7 +627,8 @@ public final class Reports {
       actions.add(safe);
     }
     if (assessment.containsKey("reviewActions")) out.put("reviewActions", actions);
-    for (String siteKey : Arrays.asList("siteAssessments", "controlReviewSites")) {
+    for (String siteKey :
+        Arrays.asList("siteAssessments", "controlReviewSites", "collectionReviewSites")) {
       if (!(assessment.get(siteKey) instanceof List<?>)) continue;
       List<Map<String, Object>> sites = new ArrayList<Map<String, Object>>();
       for (Map<String, Object> site : list(assessment, siteKey)) {
@@ -621,6 +646,9 @@ public final class Reports {
                 "manualReviewRequired");
         Map<String, Object> safe = unknownDetail(controlled);
         safe.putAll(select(site, "path", "line"));
+        if ("collectionReviewSites".equals(siteKey))
+          for (String key : collectionFields())
+            if (site.containsKey(key)) safe.put(key, site.get(key));
         sites.add(safe);
       }
       out.put(siteKey, sites);
@@ -663,6 +691,24 @@ public final class Reports {
     Map<String, Object> out = new LinkedHashMap<String, Object>();
     for (String key : keys) if (source.containsKey(key)) out.put(key, source.get(key));
     return out;
+  }
+
+  private static List<String> collectionFields() {
+    return Arrays.asList(
+        "appendPath",
+        "appendLine",
+        "checkPath",
+        "checkLine",
+        "control",
+        "assurance",
+        "failureMode",
+        "checkedElementPath",
+        "elementBinding",
+        "subjectBinding",
+        "decisionBinding",
+        "outputBinding",
+        "coverage",
+        "limitations");
   }
 
   @SuppressWarnings("unchecked")

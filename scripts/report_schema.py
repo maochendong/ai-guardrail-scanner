@@ -14,12 +14,17 @@ DETAIL_FIELDS = ['ruleId', 'domain', 'disposition', 'severity', 'title', 'explan
                  'recommendation', 'limitations', 'profile', 'mappedPathOutcomes',
                  'unknownCategory', 'manualReviewRequired', 'siteAssessmentsTruncated',
                  'controlReviewSitesTruncated', 'callContextSitesTruncated', 'streamTimingSitesTruncated',
+                 'collectionReviewSitesTruncated',
                  'semanticScope', 'semanticCoverageIncomplete']
 SEMANTIC_FIELDS = ['kind', 'engine', 'policyDigest', 'sourceRuleIds', 'language']
 SITE_FIELDS = ['ruleId', 'disposition', 'unknownCategory', 'unknownReasons', 'evidence',
                'reviewActions', 'manualReviewRequired']
 SITE_GROUPS = [('siteAssessments', '调用点', '调用点评估列表已截断'),
-               ('controlReviewSites', '控制复核', '控制复核列表已截断')]
+               ('controlReviewSites', '控制复核', '控制复核列表已截断'),
+               ('collectionReviewSites', '集合复核', '集合复核列表已截断')]
+COLLECTION_FIELDS = ['appendPath', 'appendLine', 'checkPath', 'checkLine', 'control', 'assurance',
+                     'failureMode', 'checkedElementPath', 'elementBinding', 'subjectBinding',
+                     'decisionBinding', 'outputBinding', 'coverage', 'limitations']
 CONTEXT_FIELDS = {
     'callContextSites': ['calleePath', 'calleeLine', 'callPath', 'callLine', 'binding', 'parameterStates'],
     'streamTimingSites': ['path', 'line', 'checkPath', 'checkLine', 'ordering', 'valueBinding',
@@ -93,7 +98,9 @@ def exported_detail(item):
     for field, _, _ in SITE_GROUPS:
         if field in item:
             result[field] = [dict(exported_detail(selected(site, SITE_FIELDS)),
-                                  **selected(site, ['path', 'line'])) for site in item[field]]
+                                  **selected(site, ['path', 'line'] +
+                                             (COLLECTION_FIELDS if field == 'collectionReviewSites' else [])))
+                             for site in item[field]]
     for field, fields in CONTEXT_FIELDS.items():
         if field in item:
             result[field] = [selected(site, fields) for site in item[field]]
@@ -169,6 +176,28 @@ def before_next_site(section):
     return section[:min(end for end in ends if end >= 0)] if any(end >= 0 for end in ends) else section
 
 
+def validate_collection(site, section, tag):
+    assert site.get('coverage') == 'UNKNOWN', (tag, 'collection coverage cannot be certified')
+    assert site.get('outputBinding') == 'same-collection', (tag, 'collection lacks output binding')
+    assert site.get('elementBinding') in {'same-element', 'copied-element', 'derived-element', 'unresolved'}, (tag, 'invalid element binding')
+    assert site.get('subjectBinding') in {'same-subject', 'unresolved', 'not-required'}, (tag, 'invalid subject binding')
+    assert site.get('decisionBinding') in {'all-required-predicates', 'not-established'}, (tag, 'invalid decision binding')
+    assert site.get('assurance') in {'reviewed', 'candidate', 'unknown'}, (tag, 'invalid collection assurance')
+    assert site.get('failureMode') in {'closed', 'open', 'unknown'}, (tag, 'invalid collection failure mode')
+    for prefix in ('append', 'check'):
+        assert isinstance(site.get(prefix + 'Path'), str) and site[prefix + 'Path'], (tag, 'missing collection location')
+        assert type(site.get(prefix + 'Line')) is int and site[prefix + 'Line'] > 0, (tag, 'invalid collection line')
+    assert isinstance(site.get('checkedElementPath'), list), (tag, 'invalid element path')
+    assert all(isinstance(key, str) and key for key in site['checkedElementPath']), (tag, 'invalid element key')
+    assert isinstance(site.get('limitations'), list) and 'NO_ALL_ITERATIONS_PROOF' in site['limitations'], (tag, 'missing collection limit')
+    assert 'COLLECTION_ALL_ITEMS_UNPROVEN' in {r['code'] for r in site['unknownReasons']}, (tag, 'missing collection coverage reason')
+    assert isinstance(site.get('control'), str) and site['control'], (tag, 'missing collection control')
+    for field in COLLECTION_FIELDS:
+        value = site[field]
+        display = '[' + ', '.join(md_value(v) for v in value) + ']' if isinstance(value, list) else md_value(value)
+        assert '- 集合关系 {}：{}'.format(field, display) in section, (tag, 'Markdown collection relation missing', field)
+
+
 def validate_context(item, section, tag):
     for field, fields in CONTEXT_FIELDS.items():
         if not item['ruleId'].startswith('BANK-') and field not in item:
@@ -242,21 +271,26 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
                 assert expected in parent_section, (tag, 'Markdown exact reason missing', reason['code'])
         for field, prefix, truncated_message in SITE_GROUPS:
             sites = item.get(field, [])
+            site_cursor = 0
             assert isinstance(sites, list), (tag, 'invalid site assessments', field)
             if item['ruleId'].startswith('BANK-') or field in item:
                 assert field in item and type(item.get(field + 'Truncated')) is bool and len(sites) <= 128, (tag, 'invalid site assessment bound', field)
             for site in sites:
                 site_tag = (tag, field, site.get('path'), site.get('line'))
                 assert site.get('ruleId') == item['ruleId'], (site_tag, 'site rule mismatch')
-                states = {'UNKNOWN'} if field == 'controlReviewSites' else {'UNKNOWN', 'OBSERVED', 'VIOLATED'}
+                states = {'UNKNOWN'} if field in {'controlReviewSites', 'collectionReviewSites'} else {'UNKNOWN', 'OBSERVED', 'VIOLATED'}
                 assert site.get('disposition') in states, (site_tag, 'invalid site disposition')
                 assert isinstance(site.get('path'), str) and type(site.get('line')) is int and site['line'] > 0, (site_tag, 'invalid site location')
                 site_codes = validate_reasons(site, site_tag)
                 codes.update(site_codes)
                 if site['disposition'] == 'UNKNOWN':
                     site_marker = '{} UNKNOWN：{} 第 {} 行'.format(prefix, md_value(site['path']), site['line'])
-                    assert site_marker in section, (site_tag, 'Markdown unknown site missing')
-                    site_section = before_next_site(section.split(site_marker, 1)[1])
+                    site_start = section.find(site_marker, site_cursor)
+                    assert site_start >= 0, (site_tag, 'Markdown unknown site missing or reordered')
+                    site_cursor = site_start + len(site_marker)
+                    site_section = before_next_site(section[site_cursor:])
+                    if field == 'collectionReviewSites':
+                        validate_collection(site, site_section, site_tag)
                     for reason in site['unknownReasons']:
                         assert '- {}原因 {}：{}'.format(prefix, md_value(reason['code']), md_value(reason['explanation'])) in site_section, (site_tag, 'Markdown exact site reason missing')
                     validate_review(site, site_codes, site_section, site_tag, prefix=prefix)

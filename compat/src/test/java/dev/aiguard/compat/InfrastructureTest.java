@@ -102,6 +102,19 @@ public class InfrastructureTest {
   }
 
   @Test
+  public void inventoryIncludesLombokConfigurationInSourceDigest() throws Exception {
+    Path root = folder("lombok-source");
+    Path configuration = root.resolve("lombok.config");
+    Files.write(configuration, "config.stopBubbling = true\n".getBytes(StandardCharsets.UTF_8));
+    Inventory before = Inventory.load(root, NEVER);
+    assertEquals(1, before.configurationFiles);
+    assertEquals("lombok.config", before.javaAndConfig.get(0).path);
+    Files.write(configuration, "lombok.accessors.fluent = true\n".getBytes(StandardCharsets.UTF_8));
+    Inventory after = Inventory.load(root, NEVER);
+    assertNotEquals(before.digest, after.digest);
+  }
+
+  @Test
   public void inventorySkipsSymlinksOversizeAndInvalidEncoding() throws Exception {
     Path root = folder("source2");
     Files.write(root.resolve("Huge.java"), new byte[2 * 1024 * 1024 + 1]);
@@ -288,7 +301,7 @@ public class InfrastructureTest {
     String[] lines = new String(result.toByteArray(), StandardCharsets.UTF_8).trim().split("\n");
     assertEquals(3, lines.length);
     assertEquals(
-        "0.9.0",
+        "0.10.0",
         Json.parse(lines[0])
             .getAsJsonObject()
             .getAsJsonObject("result")

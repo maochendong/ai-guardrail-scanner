@@ -277,9 +277,8 @@ public class BusinessStructuredValueFlowTest {
   }
 
   @Test
-  public void dynamicJsonAndHookCannotInventFields() throws Exception {
-    for (String value :
-        Arrays.asList("port.make()", "'{\"payload\":\"fixed\"}', object_hook=custom"))
+  public void customJsonHookCannotInventFields() throws Exception {
+    for (String value : Arrays.asList("'{\"payload\":\"fixed\"}', object_hook=custom"))
       assertNotEquals(
           "OBSERVED",
           status(

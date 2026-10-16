@@ -1,6 +1,6 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.9.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.10.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
 银行模式通过启动参数 `--profile bank-common|bank-customer|bank-internal|bank-all` 选择，分别覆盖共性、客户服务/理财销售辅助、行内知识库/办公研发助手。使用外部操作员合同映射 API 后，追踪数据出站、可信身份、Guard 阻断、事实/适当性及文档/工具权限；缺少映射保留 `UNKNOWN`。配置、样例与限制见 [银行规则包](docs/banking-rules.md)，验收见 [0.4.0 银行验证](docs/banking-verification.md)。默认 `generic` 保留原有 26 条规则选择。0.5.0 支持 [真实 API 映射与 UNKNOWN 三类原因](docs/bank-semantic-mappings.md)，对应验收见 [0.5.0 记录](docs/semantic-mappings-verification.md)。
 
@@ -15,6 +15,8 @@
 0.8.0 允许 `generic` 显式加载外部 API 合同，通过一次共享语义分析为 Java/Python 的 Guard 与检索权限规则补充逐位置证据。原有框架检查及未覆盖 UNKNOWN 保留，不把业务专项整体结果当成通用规则通过。规则集为 `java-python-guardrail-v9`，报告结构为 `1.7`。规则包写法见 [编写指南](docs/business-rule-pack-authoring.md)，本轮范围与验收见 [0.8.0 记录](docs/semantic-reuse-verification.md)。
 
 0.9.0 增加源码可确认的 DTO、Map、字典与常量 JSON 字段值流，支持同一判定对象上的 `decision.all` 复合条件，并记录流式片段到聚合检查值的派生关系。对象或嵌套字段被修改后，旧 Guard 证明失效；派生关系不等于同值校验或首包受保护。动态 JSON、未建模副作用和运行事实继续保留 UNKNOWN。规则集为 `java-python-guardrail-v10`，报告结构为 `1.8`；详见 [0.9.0 验收记录](docs/field-decision-stream-verification.md)。
+
+0.10.0 增加配置范围可核验的默认 Lombok 访问器摘要、Python 动态 JSON 和受限默认 Jackson 树的字段关系，并独立报告集合逐项检查、加入与输出之间的源码关联。配置未知的生成方法、未知 JSON 键类型、自定义解码与集合全量覆盖仍保留边界；字段身份不等于输入文本已受保护，集合关系也不等于全部元素通过。规则集为 `java-python-guardrail-v11`，报告结构为 `1.9`；详见 [0.10.0 验收记录](docs/generated-json-collection-verification.md)。
 
 ## 构建与演示
 

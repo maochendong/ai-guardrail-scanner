@@ -5,6 +5,7 @@ import static org.junit.Assert.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import org.junit.Test;
 
 public class BusinessPythonSemanticTest {
@@ -132,13 +133,34 @@ public class BusinessPythonSemanticTest {
   }
 
   @Test
-  public void dynamicDictionaryKeysAndSubscriptsDoNotBecomeExactPaths() {
+  public void dynamicDictionaryKeysAndSubscriptsDoNotBecomeExactPaths() throws Exception {
     BusinessFlow.Function dynamic =
         function(adapt("def forward(result, key):\n    return {key: result[key]}\n"), ".forward");
     assertEquals("UNKNOWN", dynamic.body.get(0).expr.kind);
     BusinessFlow.Function subscript =
         function(adapt("def forward(result, key):\n    return result[key]\n"), ".forward");
-    assertEquals("UNKNOWN", subscript.body.get(0).expr.kind);
+    BusinessFlow.Expr access = subscript.body.get(0).expr;
+    assertEquals("MEMBER", access.kind);
+    assertEquals("dict-key", access.operator);
+    assertTrue(access.name.isEmpty());
+    assertEquals("result", access.receiver.name);
+    assertEquals(1, access.args.size());
+    assertEquals("NAME", access.args.get(0).kind);
+    assertEquals("key", access.args.get(0).name);
+    // Preserving the key expression enables constant-alias resolution, but a
+    // runtime parameter must not bind repeated reads to an invented fixed field.
+    BusinessPolicy policy = BusinessPolicy.parse("bank-common", "{\"version\":2,\"contracts\":["
+        + "{\"symbol\":\"port.make\",\"arity\":0,\"kind\":\"source\",\"label\":\"model-output\"},"
+        + "{\"symbol\":\"port.check\",\"arity\":1,\"kind\":\"check\",\"control\":\"guard\",\"args\":[0],\"accept\":true,\"failureMode\":\"closed\"},"
+        + "{\"symbol\":\"port.release\",\"arity\":1,\"kind\":\"sink\",\"channel\":\"release\",\"args\":[0]}]}");
+    BusinessFlow.Program program = adapt("import port\ndef forward(key):\n"
+        + "    data={'a':port.make(), 'b':port.make()}\n"
+        + "    if port.check(data[key]):\n        port.release(data[key])\n");
+    Map<String, Object> guard = null;
+    for (Map<String, Object> item : BusinessAnalysis.analyze(program, policy, NEVER).assessments)
+      if (BusinessPolicy.GUARD.equals(item.get("ruleId"))) guard = item;
+    assertNotNull(guard);
+    assertEquals(guard.toString(), "UNKNOWN", guard.get("disposition"));
   }
 
   @Test

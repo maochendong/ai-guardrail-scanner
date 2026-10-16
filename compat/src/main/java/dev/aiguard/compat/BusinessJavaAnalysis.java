@@ -15,17 +15,21 @@ public final class BusinessJavaAnalysis {
   private final JavaGraph graph;
   private final Cancel cancel;
   private final BusinessPolicy policy;
+  private final LombokSourceDefaults lombok;
   private final BusinessFlow.Program program = new BusinessFlow.Program();
   private final Set<String> diagnostics = new HashSet<String>();
   private final Set<String> duplicateTypes = new HashSet<String>();
   private final Map<String, JavaSyntax.Type> sourceTypes =
       new java.util.HashMap<String, JavaSyntax.Type>();
+  private final Map<Node, Boolean> defaultMappers = new java.util.IdentityHashMap<Node, Boolean>();
   private int remaining = 150000;
 
-  private BusinessJavaAnalysis(JavaGraph graph, Cancel cancel, BusinessPolicy policy) {
+  private BusinessJavaAnalysis(
+      JavaGraph graph, Cancel cancel, BusinessPolicy policy, List<SourceFile> files) {
     this.graph = graph;
     this.cancel = cancel;
     this.policy = policy;
+    this.lombok = new LombokSourceDefaults(files, cancel);
     Set<String> types = new HashSet<String>();
     for (Unit unit : graph.units)
       for (JavaSyntax.Type type : unit.types) {
@@ -51,11 +55,13 @@ public final class BusinessJavaAnalysis {
       cancel.check();
       if (file.path.endsWith(".java")) units.add(syntax.parse(file, cancel));
     }
-    return new BusinessJavaAnalysis(new JavaGraph(units, cancel), cancel, policy).run();
+    return new BusinessJavaAnalysis(new JavaGraph(units, cancel), cancel, policy, files).run();
   }
 
   public static BusinessFlow.Program adapt(JavaGraph graph, Cancel cancel) {
-    return new BusinessJavaAnalysis(graph, cancel, BusinessPolicy.generic()).run();
+    return new BusinessJavaAnalysis(
+            graph, cancel, BusinessPolicy.generic(), java.util.Collections.<SourceFile>emptyList())
+        .run();
   }
 
   private BusinessFlow.Program run() {
@@ -218,6 +224,31 @@ public final class BusinessJavaAnalysis {
       out.add(result);
       return;
     }
+    if (node.kind.equals("FOR")) {
+      Node variable = null, body = null;
+      boolean enhanced = true;
+      for (Node child : node.children) {
+        if (child.kind.equals("VAR") && child.collection != null && variable == null)
+          variable = child;
+        else if (body == null) body = child;
+        else enhanced = false;
+      }
+      if (enhanced && variable != null && body != null) {
+        BusinessFlow.Stmt iteration = statement("ITERATE", node);
+        iteration.target = key(variable);
+        iteration.expr = expression(variable.collection, depth + 1);
+        statements(body, iteration.body, method, depth + 1);
+        out.add(iteration);
+        return;
+      }
+    }
+    if (node.kind.equals("EXPR_STMT") && node.children.isEmpty()) {
+      String exit = lombok.simpleLoopExit(node);
+      if (!exit.isEmpty()) {
+        out.add(statement(exit, node));
+        return;
+      }
+    }
     if (node.kind.equals("RETURN") || node.kind.equals("THROW")) {
       valueStatement(
           node.kind, "", node.args.isEmpty() ? null : node.args.get(0), node, out, depth + 1);
@@ -332,6 +363,13 @@ public final class BusinessJavaAnalysis {
     if (node == null) return new BusinessFlow.Expr("UNKNOWN");
     tick(depth);
     String kind = node.kind;
+    if (kind.equals("CAST") && node.args.size() == 1 && jacksonNode(node.args.get(0), 0)) {
+      // Tree shape is not Java type compatibility. In particular, ObjectNode is not a Map;
+      // dropping this cast would turn a ClassCastException path into an ordinary field read.
+      BusinessFlow.Expr cast = expr("UNKNOWN", node);
+      cast.args.add(expression(node.args.get(0), depth + 1));
+      return cast;
+    }
     if ((kind.equals("PAREN") || kind.equals("CAST")) && node.args.size() == 1)
       return expression(node.args.get(0), depth + 1);
     if (kind.equals("NAME")) {
@@ -360,8 +398,27 @@ public final class BusinessJavaAnalysis {
         result.args.add(expression(arg, depth + 1));
         result.argNames.add("");
       }
+      // A chained external method has no source declaration. Only a proven tree-producing
+      // expression supplies Jackson's exact member namespace for policy precedence.
+      if (result.symbol.isEmpty() && jacksonNode(node.receiver, 0)) {
+        result.symbol = "com.fasterxml.jackson.databind.JsonNode#" + node.name;
+        result.bindingUncertain = false;
+      }
       // Explicit operator semantics take precedence over structural convenience summaries.
       if (!policy.contractsForSymbol(result.symbol).isEmpty()) return result;
+      jacksonCall(node, result);
+      generatedAccessor(node, result, edge);
+      if (!result.bindingUncertain
+          && edge.reasons.contains("EXTERNAL_TYPE")
+          && result.receiver != null
+          && listType(exactConstructionType(node.receiver))) {
+        if (node.name.equals("add") && node.args.size() == 1) {
+          result.kind = "COLLECTION_APPEND";
+          result.operator = "boolean";
+        } else if (node.name.equals("size") && node.args.isEmpty()) {
+          result.kind = "COLLECTION_SIZE";
+        }
+      }
       if (result.symbol.equals("java.util.Map#of")
           && !result.bindingUncertain
           && edge.reasons.contains("EXTERNAL_TYPE")
@@ -475,6 +532,11 @@ public final class BusinessJavaAnalysis {
         if ((type.equals("java.util.HashMap") || type.equals("java.util.LinkedHashMap"))
             && node.args.isEmpty()
             && sourceType(type) == null) result.kind = "MAP";
+        else if ((type.equals("java.util.HashMap") || type.equals("java.util.LinkedHashMap"))
+            && node.args.size() == 1
+            && sourceType(type) == null
+            && mapType(graph.declaredType(node.args.get(0)))) result.kind = "MAP_COPY";
+        else if (listType(type) && node.args.isEmpty()) result.kind = "COLLECTION_NEW";
         JavaSyntax.Type owner = sourceType(type);
         Method matched = null;
         int matches = 0;
@@ -488,6 +550,15 @@ public final class BusinessJavaAnalysis {
             }
         if (matches == 1 && constructorValue(matched) != null)
           result.localTargetId = key(matched.node);
+        else if (matches == 0
+            && owner != null
+            && node.args.isEmpty()
+            && defaultGeneratedConstructor(owner)) {
+          result = defaultFields(owner, node);
+          result.generatedMethodUncertain =
+              lombok.qualification(owner, graph) != LombokSourceDefaults.DEFAULTS;
+          result.bindingUncertain = result.generatedMethodUncertain;
+        }
         return result;
       }
     }
@@ -544,6 +615,11 @@ public final class BusinessJavaAnalysis {
         && sourceType(type) == null;
   }
 
+  private boolean listType(String type) {
+    return (type.equals("java.util.ArrayList") || type.equals("java.util.LinkedList"))
+        && sourceType(type) == null;
+  }
+
   private JavaSyntax.Type sourceType(String name) {
     return sourceTypes.get(name);
   }
@@ -571,19 +647,274 @@ public final class BusinessJavaAnalysis {
         : null;
   }
 
-  /** Only a complete, side-effect-free source constructor supplies object field identities. */
-  private BusinessFlow.Expr constructorValue(Method method) {
-    if (!method.name.equals(method.owner.name)
-        || !method.returnType.isEmpty()
-        || method.rootNode == null
-        || !method.owner.superTypes.isEmpty()
-        || method.owner.instanceInitializer != null
-        || method.owner.staticInitializer != null) return null;
-    BusinessFlow.Expr result = expr("MAP", method.node);
+  private boolean markerOnly(JavaSyntax.Type owner) {
+    for (String raw : owner.superTypes) {
+      String name = graph.qualifiedType(owner.node, raw);
+      if (!name.equals("java.io.Serializable") || sourceType(name) != null) return false;
+    }
+    return true;
+  }
+
+  private void jacksonCall(Node call, BusinessFlow.Expr result) {
+    if (defaultJsonParse(call)) {
+      result.kind = "JACKSON_PARSE";
+      result.operator = "default-mapper";
+      result.bindingUncertain = false;
+      result.localTargetId = "";
+      return;
+    }
+    if (!jacksonNode(call.receiver, 0)) return;
+    String name = call.name;
+    if ((name.equals("path") || name.equals("get") || name.equals("has"))
+        && call.args.size() == 1
+        && stringKey(call.args.get(0)) != null) {
+      result.kind = "JACKSON_" + name.toUpperCase(java.util.Locale.ROOT);
+    } else if (name.equals("asText")
+        && (call.args.isEmpty() || call.args.size() == 1 && stringKey(call.args.get(0)) != null)) {
+      result.kind = "JACKSON_TEXT";
+    } else return;
+    result.bindingUncertain = false;
+    result.localTargetId = "";
+  }
+
+  private boolean defaultJsonParse(Node call) {
+    return call != null
+        && call.kind.equals("CALL")
+        && call.name.equals("readTree")
+        && call.args.size() == 1
+        && graph.declaredType(call.args.get(0)).equals("java.lang.String")
+        && sourceType("com.fasterxml.jackson.databind.JsonNode") == null
+        && sourceType("com.fasterxml.jackson.databind.ObjectMapper") == null
+        && policy
+            .contractsForSymbol("com.fasterxml.jackson.databind.ObjectMapper#readTree")
+            .isEmpty()
+        && defaultMapper(call.receiver);
+  }
+
+  private boolean defaultMapper(Node receiver) {
+    if (receiver == null
+        || !graph.declaredType(receiver).equals("com.fasterxml.jackson.databind.ObjectMapper"))
+      return false;
+    if (receiver.kind.equals("NEW")) return plainMapperConstruction(receiver);
+    Node declaration = graph.declaration(receiver);
+    if (declaration == null) return false;
+    Boolean cached = defaultMappers.get(declaration);
+    if (cached != null) return cached.booleanValue();
+    defaultMappers.put(declaration, Boolean.FALSE);
+    if (!plainMapperConstruction(declaration.initializer)) return false;
+    if (declaration.kind.equals("FIELD")) {
+      if (!declaration.modifiers.contains("private") || !declaration.modifiers.contains("final"))
+        return false;
+    } else if (!declaration.kind.equals("VAR")) return false;
+    // A final reference does not make ObjectMapper configuration immutable. Every source use
+    // must be a String readTree call; configuration calls, aliases and escapes reject the summary.
+    for (Node use : JavaSyntax.find(declaration.unit.root, null)) {
+      tick(0);
+      if (use == declaration
+          || !(use.kind.equals("NAME") || use.kind.equals("FIELD"))
+          || graph.declaration(use) != declaration) continue;
+      Node call = use.parent;
+      if (call == null
+          || !call.kind.equals("CALL")
+          || call.receiver != use
+          || !call.name.equals("readTree")
+          || call.args.size() != 1
+          || !graph.declaredType(call.args.get(0)).equals("java.lang.String")) return false;
+    }
+    defaultMappers.put(declaration, Boolean.TRUE);
+    return true;
+  }
+
+  private boolean plainMapperConstruction(Node created) {
+    return created != null
+        && created.kind.equals("NEW")
+        && created.args.isEmpty()
+        && !created.modifiers.contains("anonymous")
+        && !created.modifiers.contains("array")
+        && graph.declaredType(created).equals("com.fasterxml.jackson.databind.ObjectMapper")
+        && sourceType("com.fasterxml.jackson.databind.ObjectMapper") == null
+        && policy
+            .contractsForSymbol("com.fasterxml.jackson.databind.ObjectMapper#<init>")
+            .isEmpty();
+  }
+
+  private boolean jacksonNode(Node node, int depth) {
+    if (node == null || depth > 16) return false;
+    tick(depth);
+    while (node.kind.equals("PAREN") && node.args.size() == 1) node = node.args.get(0);
+    if (defaultJsonParse(node)) return true;
+    if (node.kind.equals("CALL")
+        && (node.name.equals("path") || node.name.equals("get"))
+        && node.args.size() == 1
+        && stringKey(node.args.get(0)) != null
+        && policy
+            .contractsForSymbol("com.fasterxml.jackson.databind.JsonNode#" + node.name)
+            .isEmpty()) return jacksonNode(node.receiver, depth + 1);
+    if (node.kind.equals("NAME")) {
+      Node declaration = graph.declaration(node);
+      if (declaration == null || !declaration.kind.equals("VAR") || declaration.method == null)
+        return false;
+      for (Node assignment : JavaSyntax.find(declaration.method.rootNode, "ASSIGN")) {
+        tick(depth);
+        if (graph.declaration(assignment.receiver) == declaration) return false;
+      }
+      return jacksonNode(declaration.initializer, depth + 1);
+    }
+    return false;
+  }
+
+  private boolean lombokAnnotation(Node context, Set<String> annotations, String expected) {
+    if (sourceType(expected) != null || lombok.shadowsAnnotation(context, expected)) return false;
+    for (String annotation : annotations)
+      if (graph.qualifiedType(context, annotation).equals(expected)) return true;
+    return false;
+  }
+
+  private boolean nullChecked(Node field) {
+    for (String annotation : field.annotations) {
+      String simple = annotation.substring(annotation.lastIndexOf('.') + 1);
+      if (simple.toLowerCase(java.util.Locale.ROOT).endsWith("nonnull")
+          || simple.equalsIgnoreCase("NotNull")
+          || simple.equalsIgnoreCase("NonNullDecl")
+          || simple.equalsIgnoreCase("NonNullType")) return true;
+    }
+    return false;
+  }
+
+  private boolean generatedType(JavaSyntax.Type owner) {
+    return owner != null
+        && owner.kind.equals("CLASS")
+        && !duplicateTypes.contains(owner.qualifiedName)
+        && markerOnly(owner)
+        && owner.staticInitializer == null
+        && owner.instanceInitializer == null
+        && lombok.qualification(owner, graph) != LombokSourceDefaults.BLOCKED;
+  }
+
+  private void generatedAccessor(Node call, BusinessFlow.Expr result, JavaGraph.Edge edge) {
+    if (!result.kind.equals("CALL")
+        || result.receiver == null
+        || !edge.targets.isEmpty()
+        || !edge.reasons.contains("NO_SOURCE_METHOD")
+        || result.bindingUncertain) return;
+    JavaSyntax.Type owner = sourceType(graph.declaredType(call.receiver));
+    if (!generatedType(owner) || !exactReceiver(call.receiver, owner)) return;
+    boolean setter = call.args.size() == 1, getter = call.args.isEmpty();
+    if (!setter && !getter) return;
+    Node matched = null;
+    for (Node field : owner.fields) {
+      tick(0);
+      if (field.modifiers.contains("static")
+          || setter && field.modifiers.contains("final")
+          || field.name.startsWith("$")
+          || nullChecked(field)) continue;
+      String annotation = setter ? "lombok.Setter" : "lombok.Getter";
+      if (!lombokAnnotation(field, field.annotations, annotation)
+          && !lombokAnnotation(owner.node, owner.annotations, annotation)
+          && !lombokAnnotation(owner.node, owner.annotations, "lombok.Data")) continue;
+      String suffix = field.name;
+      if (suffix.isEmpty() || !suffix.matches("[a-zA-Z_][a-zA-Z_0-9]*")) continue;
+      boolean primitiveBoolean = field.type.equals("boolean");
+      if (primitiveBoolean
+          && suffix.startsWith("is")
+          && suffix.length() > 2
+          && !Character.isLowerCase(suffix.charAt(2))
+          && !Character.isUpperCase(suffix.charAt(2))) continue;
+      boolean isPrefixed =
+          primitiveBoolean
+              && suffix.startsWith("is")
+              && suffix.length() > 2
+              && Character.isUpperCase(suffix.charAt(2));
+      if (isPrefixed) suffix = suffix.substring(2);
+      suffix = Character.toUpperCase(suffix.charAt(0)) + suffix.substring(1);
+      String name = (setter ? "set" : primitiveBoolean ? "is" : "get") + suffix;
+      if (!call.name.equals(name)) continue;
+      Set<String> alternatives = new HashSet<String>();
+      alternatives.add(name.toLowerCase(java.util.Locale.ROOT));
+      if (primitiveBoolean) {
+        String original = Character.toUpperCase(field.name.charAt(0)) + field.name.substring(1);
+        alternatives.add(((setter ? "set" : "is") + original).toLowerCase(java.util.Locale.ROOT));
+        if (!setter) {
+          alternatives.add(("get" + suffix).toLowerCase(java.util.Locale.ROOT));
+          alternatives.add(("get" + original).toLowerCase(java.util.Locale.ROOT));
+        }
+      }
+      for (Method method : owner.methods)
+        if (alternatives.contains(method.name.toLowerCase(java.util.Locale.ROOT))
+            && (method.params.size() == call.args.size() || varargs(method))) return;
+      if (matched != null) return;
+      matched = field;
+    }
+    if (matched == null) return;
+    result.kind = setter ? "PUT_MEMBER" : "MEMBER";
+    result.name = matched.name;
+    if (setter) result.operator = "void";
+    result.localTargetId = "";
+    result.generatedMethodUncertain =
+        lombok.qualification(owner, graph) != LombokSourceDefaults.DEFAULTS;
+    result.bindingUncertain = result.generatedMethodUncertain;
+    if (result.generatedMethodUncertain)
+      diagnostic(
+          "GENERATED_METHOD_CONFIGURATION_UNVERIFIED",
+          call.unit.path,
+          "Lombok default accessors are candidate field paths: inherited or external configuration"
+              + " and annotation processing were not verified.");
+  }
+
+  private boolean varargs(Method method) {
+    // Syntax normalizes varargs to arrays. Suppress on either form instead of inventing a getter.
+    return !method.params.isEmpty()
+        && method.params.get(method.params.size() - 1).type.endsWith("[]");
+  }
+
+  private boolean exactReceiver(Node receiver, JavaSyntax.Type owner) {
+    while (receiver != null && receiver.kind.equals("PAREN") && receiver.args.size() == 1)
+      receiver = receiver.args.get(0);
+    if (receiver == null) return false;
+    if (owner.modifiers.contains("final")) return true;
+    return exactConstructionType(receiver).equals(owner.qualifiedName);
+  }
+
+  private String exactConstructionType(Node receiver) {
+    while (receiver != null && receiver.kind.equals("PAREN") && receiver.args.size() == 1)
+      receiver = receiver.args.get(0);
+    if (receiver == null) return "";
+    Node created = receiver;
+    if (receiver.kind.equals("NAME")) {
+      Node declaration = graph.declaration(receiver);
+      if (declaration == null || !declaration.kind.equals("VAR") || declaration.method == null)
+        return "";
+      created = declaration.initializer;
+      for (Node assignment : JavaSyntax.find(declaration.method.rootNode, "ASSIGN")) {
+        tick(0);
+        if (graph.declaration(assignment.receiver) == declaration) return "";
+      }
+    }
+    return created != null
+            && created.kind.equals("NEW")
+            && !created.modifiers.contains("anonymous")
+            && !created.modifiers.contains("array")
+        ? graph.declaredType(created)
+        : "";
+  }
+
+  private boolean defaultGeneratedConstructor(JavaSyntax.Type owner) {
+    if (!generatedType(owner) || !lombokAnnotation(owner.node, owner.annotations, "lombok.Data"))
+      return false;
+    for (Method method : owner.methods)
+      if (method.name.equals(owner.name) && method.returnType.isEmpty()) return false;
+    for (Node field : owner.fields)
+      if (!field.modifiers.contains("static")
+          && (field.initializer != null || field.modifiers.contains("final") || nullChecked(field)))
+        return false;
+    return true;
+  }
+
+  private BusinessFlow.Expr defaultFields(JavaSyntax.Type owner, Node location) {
+    BusinessFlow.Expr result = expr("MAP", location);
     result.name = "object";
-    for (Node field : method.owner.fields) {
+    for (Node field : owner.fields) {
       if (field.modifiers.contains("static")) continue;
-      if (field.initializer != null) return null;
       BusinessFlow.Expr zero = expr("LITERAL", field);
       zero.literal =
           field.type.equals("boolean")
@@ -594,6 +925,49 @@ public final class BusinessJavaAnalysis {
                   : null;
       result.members.put(field.name, zero);
     }
+    return result;
+  }
+
+  private boolean clockValue(Node value) {
+    if (value == null
+        || !value.kind.equals("CALL")
+        || !value.name.equals("currentTimeMillis")
+        || !value.args.isEmpty()
+        || value.receiver == null
+        || !policy.contractsForSymbol("java.lang.System#currentTimeMillis").isEmpty()
+        || sourceType("java.lang.System") != null) return false;
+    String resolved = symbol(value);
+    if (resolved.equals("java.lang.System#currentTimeMillis") && typeReceiver(value.receiver))
+      return true;
+    // JavaGraph deliberately has a small java.lang allowlist. Resolve this one harmless clock
+    // only when no lexical declaration, explicit import or wildcard can supply another System.
+    if (!value.receiver.kind.equals("NAME")
+        || !value.receiver.name.equals("System")
+        || graph.declaration(value.receiver) != null
+        || !value.unit.wildcardImports.isEmpty()
+        || value.unit.imports.containsKey("System")) return false;
+    String samePackage =
+        value.unit.packageName.isEmpty() ? "System" : value.unit.packageName + ".System";
+    if (sourceType(samePackage) != null) return false;
+    for (JavaSyntax.Type scope = value.ownerType; scope != null; scope = scope.owner)
+      if (scope.name.equals("System") || sourceType(scope.qualifiedName + ".System") != null)
+        return false;
+    return true;
+  }
+
+  /** Only a complete, side-effect-free source constructor supplies object field identities. */
+  private BusinessFlow.Expr constructorValue(Method method) {
+    if (!method.name.equals(method.owner.name)
+        || !method.returnType.isEmpty()
+        || method.rootNode == null
+        || !markerOnly(method.owner)
+        || method.owner.instanceInitializer != null
+        || method.owner.staticInitializer != null) return null;
+    BusinessFlow.Expr result = defaultFields(method.owner, method.node);
+    for (Node field : method.owner.fields) {
+      if (field.modifiers.contains("static")) continue;
+      if (field.initializer != null) return null;
+    }
     for (Node child : method.rootNode.children) {
       Node assignment = soleStatement(child);
       if (assignment == null || !assignment.kind.equals("ASSIGN") || !assignment.name.equals("="))
@@ -601,7 +975,8 @@ public final class BusinessJavaAnalysis {
       Node field = ownField(assignment.receiver, method);
       if (field == null) return null;
       BusinessFlow.Expr value = expression(assignment.initializer, 0);
-      if (!value.kind.equals("NAME") && !value.kind.equals("LITERAL")) return null;
+      if (clockValue(assignment.initializer)) value = expr("UNKNOWN", assignment.initializer);
+      else if (!value.kind.equals("NAME") && !value.kind.equals("LITERAL")) return null;
       if (value.kind.equals("NAME")) {
         boolean parameter = false;
         for (Param param : method.params) parameter |= key(param.node).equals(value.name);

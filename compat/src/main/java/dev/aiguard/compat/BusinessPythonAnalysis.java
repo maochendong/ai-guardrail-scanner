@@ -663,6 +663,7 @@ public final class BusinessPythonAnalysis {
         ParserRuleContext name = direct(n, "Name");
         if (name != null) return expression(name, scope, depth + 1);
         if (has(n, "{")) return dictionary(n, scope, depth + 1);
+        if (has(n, "[")) return listLiteral(n, scope, depth + 1);
         if (direct(n, "Testlist_comp") != null && !has(n, "["))
           return expression(direct(n, "Testlist_comp"), scope, depth + 1);
         if (children(n).isEmpty()) {
@@ -811,9 +812,11 @@ public final class BusinessPythonAnalysis {
               slots.size() == 1 && !has(subscripts, ",") && !has(slots.get(0), ":")
                   ? expression(slots.get(0), scope, depth + 1)
                   : null;
-          if (key != null && "LITERAL".equals(key.kind) && key.literal instanceof String) {
+          if (key != null) {
             sub = expr("MEMBER", trailer);
-            sub.name = (String) key.literal;
+            if ("LITERAL".equals(key.kind) && key.literal instanceof String)
+              sub.name = (String) key.literal;
+            else sub.args.add(key);
             sub.operator = "dict-key";
             sub.receiver = value;
           } else {
@@ -892,6 +895,20 @@ public final class BusinessPythonAnalysis {
           return unsupportedExpr(atom, scope, depth + 1);
         out.members.put((String) key.literal, expression(parts.get(i + 1), scope, depth + 1));
       }
+      return out;
+    }
+
+    BusinessFlow.Expr listLiteral(ParserRuleContext atom, Scope scope, int depth) {
+      BusinessFlow.Expr out = expr("MAP", atom);
+      out.name = "list";
+      ParserRuleContext items = direct(atom, "Testlist_comp");
+      if (items == null) return out;
+      if (direct(items, "Comp_for") != null || !directs(items, "Star_expr").isEmpty())
+        return unsupportedExpr(atom, scope, depth + 1);
+      List<ParserRuleContext> values = directs(items, "Test");
+      if (values.size() > 128) return unsupportedExpr(atom, scope, depth + 1);
+      for (int i = 0; i < values.size(); i++)
+        out.members.put("i:" + i, expression(values.get(i), scope, depth + 1));
       return out;
     }
 

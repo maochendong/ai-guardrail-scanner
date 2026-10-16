@@ -497,6 +497,22 @@ public final class BusinessStreamTiming {
     tick();
     if (depth > 64) throw new Limit();
     if (expr == null) return unknown();
+    if (expr.generatedMethodUncertain) {
+      // Configuration outside the authorized source root may change generated behavior.
+      // Candidate field syntax must not create an accepted-before-release timing proof.
+      Value value = unknown();
+      if (expr.receiver != null) invalidate(eval(expr.receiver, state, depth + 1), state, 0);
+      for (BusinessFlow.Expr arg : expr.args) {
+        Value touched = eval(arg, state, depth + 1);
+        value.labels.addAll(touched.labels);
+        invalidate(touched, state, 0);
+      }
+      for (BusinessFlow.Expr member : expr.members.values())
+        invalidate(eval(member, state, depth + 1), state, 0);
+      uncertain(state, false);
+      exceptional(state);
+      return value;
+    }
     if ("NAME".equals(expr.kind)) {
       Value value = state.vars.get(expr.name);
       if (value == null) {
@@ -621,6 +637,14 @@ public final class BusinessStreamTiming {
       }
     }
     if ("MEMBER".equals(expr.kind)) {
+      if (!expr.args.isEmpty()) {
+        // Dynamic key interpretation is currently confined to the main value analysis.
+        if (receiver != null) invalidate(receiver, state, 0);
+        for (Value arg : args) invalidate(arg, state, 0);
+        uncertain(state, false);
+        exceptional(state);
+        return unknown();
+      }
       Value projected = projectDecision(expr, receiver, args, state);
       if (projected != null) return projected;
       if (receiver != null && !receiver.opaque && !state.invalidated.contains(receiver.id)) {

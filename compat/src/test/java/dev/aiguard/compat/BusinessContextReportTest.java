@@ -163,6 +163,78 @@ public class BusinessContextReportTest {
   }
 
   @Test
+  public void collectionRelationsRemainUnknownAndRetainReviewMetadata() throws Exception {
+    Map<String, Object> item = finding("OBSERVED");
+    Map<String, Object> site =
+        Findings.map(
+            "ruleId",
+            BusinessPolicy.GUARD,
+            "disposition",
+            "UNKNOWN",
+            "path",
+            "Demo.java",
+            "line",
+            12,
+            "appendPath",
+            "Demo.java",
+            "appendLine",
+            10,
+            "checkPath",
+            "Demo.java",
+            "checkLine",
+            8,
+            "control",
+            "guard",
+            "assurance",
+            "candidate",
+            "failureMode",
+            "unknown",
+            "checkedElementPath",
+            Arrays.asList("content"),
+            "elementBinding",
+            "same-element",
+            "subjectBinding",
+            "not-required",
+            "decisionBinding",
+            "not-established",
+            "outputBinding",
+            "same-collection",
+            "coverage",
+            "UNKNOWN",
+            "limitations",
+            Arrays.asList("NO_ALL_ITERATIONS_PROOF"),
+            "symbol",
+            "PRIVATE_SYMBOL",
+            "sourceValue",
+            "PRIVATE_VALUE");
+    Unknowns.set(
+        site, "UNSUPPORTED", "COLLECTION_ALL_ITEMS_UNPROVEN", "All items remain unproven.");
+    item.put("collectionReviewSites", Arrays.asList(site));
+    item.put("collectionReviewSitesTruncated", false);
+    Unknowns.complete(Arrays.asList(item), Collections.<Map<String, Object>>emptyList());
+    assertEquals("OBSERVED", item.get("disposition"));
+    assertFalse(((List<?>) item.get("reviewActions")).isEmpty());
+    Map<String, String> docs = write(item);
+    String markdown = decoded(docs.get("markdown"));
+    assertTrue(markdown.contains("集合复核 UNKNOWN：Demo.java 第 12 行"));
+    assertTrue(markdown.contains("集合关系 checkedElementPath：[content]"));
+    assertTrue(markdown.contains("COLLECTION_ALL_ITEMS_UNPROVEN"));
+    JsonObject exported =
+        properties(docs.get("sarif"))
+            .getAsJsonArray("reviewAssessmentsDetails")
+            .get(0)
+            .getAsJsonObject()
+            .getAsJsonArray("collectionReviewSites")
+            .get(0)
+            .getAsJsonObject();
+    assertEquals("UNKNOWN", exported.get("coverage").getAsString());
+    assertEquals(10, exported.get("appendLine").getAsInt());
+    assertFalse(exported.has("symbol"));
+    assertFalse(exported.has("sourceValue"));
+    assertTrue(exported.has("reviewActions"));
+  }
+
+  @Test
   public void truncatedContextIsExplicitEvenWithoutRetainedSites() throws Exception {
     Map<String, Object> item = finding("OBSERVED");
     item.put("callContextSites", Collections.emptyList());
