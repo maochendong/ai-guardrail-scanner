@@ -1,10 +1,23 @@
 package dev.aiguard.compat;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 /** Contract-based bounded source interpretation. It never executes application code. */
 public final class BusinessAnalysis {
   public final List<Map<String, Object>> assessments = new ArrayList<Map<String, Object>>();
+  // Shared engine facts are independent from which business rules the profile publishes.
+  final List<Map<String, Object>> semanticAssessments = new ArrayList<Map<String, Object>>();
+  // At most 2 languages * (3 Guard outcomes + 3 * 3 paired retrieval outcomes).
+  // These representatives survive the public detail cap without changing flow budgets.
+  private final Map<String, List<Map<String, Object>>> semanticRepresentatives =
+      new LinkedHashMap<String, List<Map<String, Object>>>();
+  private Map<String, Object> lastIdentitySite;
+  private final Map<String, Set<String>> semanticFailureLanguages =
+      new HashMap<String, Set<String>>();
+  private String limitedPath = "";
   public final List<Map<String, Object>> diagnostics = new ArrayList<Map<String, Object>>();
   private final BusinessPolicy policy;
   private final Cancel cancel;
@@ -35,6 +48,7 @@ public final class BusinessAnalysis {
   private List<Map<String, Object>> streamTimingSites = Collections.emptyList();
   private boolean streamTimingSitesTruncated;
   private final Set<String> callSites = new HashSet<String>(),
+      modelSourceSites = new HashSet<String>(),
       boundarySites = new HashSet<String>(),
       candidateSites = new HashSet<String>(),
       bindingFailures = new HashSet<String>();
@@ -116,8 +130,11 @@ public final class BusinessAnalysis {
     for (String duplicate : duplicateIds) analysis.localFunctions.remove(duplicate);
     analysis.diagnostics.addAll(program.diagnostics);
     analysis.mappingCoverage.put("incompleteSourceFiles", program.incompletePaths.size());
-    if (!program.incompletePaths.isEmpty())
+    if (!program.incompletePaths.isEmpty()) {
       analysis.incompleteSourceRules.addAll(analysis.declaredRules);
+      for (String path : program.incompletePaths)
+        analysis.semanticFailure(analysis.declaredRules, "SOURCE_FLOW_INCOMPLETE", path);
+    }
     int analyzed = 0;
     Set<String> definitions = new HashSet<String>();
     try {
@@ -640,6 +657,7 @@ public final class BusinessAnalysis {
         exceptional(state);
         boolean candidate = expr.bindingUncertain || "candidate".equals(contract.assurance);
         if ("source".equals(contract.kind)) {
+          if ("model-output".equals(contract.label) && !candidate) modelSourceSites.add(site(expr));
           if (!contract.outboundArgs.isEmpty()) {
             State outgoing = state.copy();
             if (candidate) outgoing.uncertain = true;
@@ -722,6 +740,9 @@ public final class BusinessAnalysis {
         if ("call".equals(candidateContract.boundary)) {
           bindingFailures.add(site(expr));
           related(candidateContract, bindingRules);
+          Set<String> affected = new HashSet<String>();
+          related(candidateContract, affected);
+          semanticFailure(affected, "ARGUMENT_BINDING_UNRESOLVED", expr.path);
           break;
         }
       BusinessFlow.Function target = localFunctions.get(expr.localTargetId);
@@ -1265,14 +1286,21 @@ public final class BusinessAnalysis {
   }
 
   private void markLimited(BusinessFlow.Function function) {
-    related(policy.contract(function.symbol, function.params.size()));
-    related(function.body, 0);
+    String previous = limitedPath;
+    limitedPath = function.path;
+    try {
+      related(policy.contract(function.symbol, function.params.size()));
+      related(function.body, 0);
+    } finally {
+      limitedPath = previous;
+    }
   }
 
   private void related(List<BusinessFlow.Stmt> body, int depth) {
     cancel.check();
     if (depth > 256) {
       limitedRules.addAll(declaredRules);
+      semanticFailure(declaredRules, "BANK_ANALYSIS_BOUNDED", limitedPath);
       return;
     }
     for (BusinessFlow.Stmt statement : body) {
@@ -1289,6 +1317,7 @@ public final class BusinessAnalysis {
     cancel.check();
     if (depth > 256) {
       limitedRules.addAll(declaredRules);
+      semanticFailure(declaredRules, "BANK_ANALYSIS_BOUNDED", limitedPath);
       return;
     }
     for (BusinessPolicy.Contract contract : policy.contractsForSymbol(expr.symbol))
@@ -1305,6 +1334,25 @@ public final class BusinessAnalysis {
 
   private void related(BusinessPolicy.Contract contract) {
     related(contract, limitedRules);
+    Set<String> affected = new HashSet<String>();
+    related(contract, affected);
+    semanticFailure(affected, "BANK_ANALYSIS_BOUNDED", limitedPath);
+  }
+
+  private void semanticFailure(Set<String> rules, String code, String path) {
+    String language = path.endsWith(".java") ? "java" : path.endsWith(".py") ? "python" : "";
+    if (language.isEmpty()) return;
+    for (String rule : rules) {
+      String key = rule + ":" + code;
+      if (!semanticFailureLanguages.containsKey(key))
+        semanticFailureLanguages.put(key, new HashSet<String>());
+      semanticFailureLanguages.get(key).add(language);
+    }
+  }
+
+  boolean hasSemanticFailure(String rule, String code, String language) {
+    Set<String> languages = semanticFailureLanguages.get(rule + ":" + code);
+    return languages != null && languages.contains(language);
   }
 
   private void related(BusinessPolicy.Contract contract, Set<String> rules) {
@@ -1329,6 +1377,21 @@ public final class BusinessAnalysis {
 
   private static String site(BusinessFlow.Expr expr) {
     return expr.path + ":" + expr.line + ":" + expr.symbol;
+  }
+
+  private static String publicSiteId(BusinessFlow.Expr expr) {
+    try {
+      byte[] bytes =
+          MessageDigest.getInstance("SHA-256").digest(site(expr).getBytes(StandardCharsets.UTF_8));
+      StringBuilder result = new StringBuilder();
+      for (byte value : bytes) {
+        result.append("0123456789abcdef".charAt((value & 255) >>> 4));
+        result.append("0123456789abcdef".charAt(value & 15));
+      }
+      return result.toString();
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 unavailable", impossible);
+    }
   }
 
   private static void reason(
@@ -1618,7 +1681,6 @@ public final class BusinessAnalysis {
       boolean covered,
       Proof proof,
       boolean noClassification) {
-    if (!policy.ruleIds().contains(id)) return;
     Outcome outcome = outcomes.get(id);
     if (outcome == null) {
       outcome = new Outcome();
@@ -1666,6 +1728,7 @@ public final class BusinessAnalysis {
                 : covered
                     ? "Mapped sink uses the checked/transformed value on this path."
                     : "Mapped sink has a local path without its required bound control."));
+    retainSemanticRepresentative(id, expr, values, disposition, reasons, chain);
     String siteKey = site(expr) + ":" + disposition;
     Map<String, Object> detail = outcome.siteAssessments.get(siteKey);
     if (detail == null && outcome.siteAssessments.size() < 128) {
@@ -1673,6 +1736,8 @@ public final class BusinessAnalysis {
           Findings.map(
               "ruleId",
               id,
+              "siteId",
+              publicSiteId(expr),
               "path",
               expr.path,
               "line",
@@ -1682,18 +1747,100 @@ public final class BusinessAnalysis {
               "unknownReasons",
               new ArrayList<Map<String, Object>>(),
               "evidence",
-              new ArrayList<Map<String, Object>>());
+              new ArrayList<Map<String, Object>>(),
+              "valueLabels",
+              new ArrayList<String>());
       outcome.siteAssessments.put(siteKey, detail);
     } else if (detail == null) outcome.sitesTruncated = true;
     if (detail != null) {
       mergeDetails(detail, "unknownReasons", reasons, false);
       mergeDetails(detail, "evidence", chain, true);
+      @SuppressWarnings("unchecked")
+      List<String> labels = (List<String>) detail.get("valueLabels");
+      for (Value value : values)
+        for (String label : value.labels) if (!labels.contains(label)) labels.add(label);
+      Collections.sort(labels);
     }
     if ("VIOLATED".equals(disposition)) {
       chain.addAll(outcome.evidence);
       outcome.evidence.clear();
       for (Map<String, Object> e : chain) append(outcome.evidence, e);
     } else for (Map<String, Object> e : chain) append(outcome.evidence, e);
+  }
+
+  private void retainSemanticRepresentative(
+      String id,
+      BusinessFlow.Expr expr,
+      List<Value> values,
+      String disposition,
+      List<Map<String, Object>> reasons,
+      List<Map<String, Object>> chain) {
+    String language =
+        expr.path.endsWith(".java") ? "java" : expr.path.endsWith(".py") ? "python" : "";
+    if (language.isEmpty()) return;
+    if (BusinessPolicy.GUARD.equals(id)) {
+      boolean model = false;
+      for (Value value : values) model |= value.labels.contains("model-output");
+      String key = language + ":guard:" + disposition;
+      if (model && !semanticRepresentatives.containsKey(key))
+        semanticRepresentatives.put(
+            key, Arrays.asList(semanticSite(id, expr, values, disposition, reasons, chain)));
+    } else if (BusinessPolicy.IAM.equals(id)) {
+      // sink() records the subject result immediately before the ACL result for a retrieval.
+      lastIdentitySite = semanticSite(id, expr, values, disposition, reasons, chain);
+    } else if (BusinessPolicy.ACL.equals(id)) {
+      if (lastIdentitySite != null && publicSiteId(expr).equals(lastIdentitySite.get("siteId"))) {
+        String key =
+            language + ":retrieve:" + lastIdentitySite.get("disposition") + ":" + disposition;
+        if (!semanticRepresentatives.containsKey(key))
+          semanticRepresentatives.put(
+              key,
+              Arrays.asList(
+                  lastIdentitySite, semanticSite(id, expr, values, disposition, reasons, chain)));
+      }
+      lastIdentitySite = null;
+    }
+  }
+
+  private static Map<String, Object> semanticSite(
+      String id,
+      BusinessFlow.Expr expr,
+      List<Value> values,
+      String disposition,
+      List<Map<String, Object>> reasons,
+      List<Map<String, Object>> chain) {
+    Set<String> labels = new TreeSet<String>();
+    for (Value value : values) labels.addAll(value.labels);
+    return Findings.map(
+        "ruleId",
+        id,
+        "siteId",
+        publicSiteId(expr),
+        "path",
+        expr.path,
+        "line",
+        expr.line,
+        "disposition",
+        disposition,
+        "unknownReasons",
+        new ArrayList<Map<String, Object>>(reasons),
+        "evidence",
+        new ArrayList<Map<String, Object>>(chain),
+        "valueLabels",
+        new ArrayList<String>(labels));
+  }
+
+  /** Representatives come first so downstream bounds cannot discard a late, known outcome. */
+  List<Map<String, Object>> semanticSites(String id) {
+    List<Map<String, Object>> sites = new ArrayList<Map<String, Object>>();
+    for (List<Map<String, Object>> pair : semanticRepresentatives.values())
+      for (Map<String, Object> site : pair)
+        if (id.equals(site.get("ruleId")) && !sites.contains(site)) sites.add(site);
+    Outcome outcome = outcomes.get(id);
+    if (outcome != null)
+      for (Map<String, Object> site : outcome.siteAssessments.values())
+        if (!sites.contains(site)) sites.add(site);
+    return sites;
   }
 
   @SuppressWarnings("unchecked")
@@ -1719,6 +1866,7 @@ public final class BusinessAnalysis {
 
   private void finish() {
     mappingCoverage.put("matchedCallSites", callSites.size());
+    mappingCoverage.put("matchedModelSourceSites", modelSourceSites.size());
     mappingCoverage.put("matchedBoundarySites", boundarySites.size());
     mappingCoverage.put("candidateCallSites", candidateSites.size());
     mappingCoverage.put("argumentBindingFailures", bindingFailures.size());
@@ -1728,7 +1876,7 @@ public final class BusinessAnalysis {
               "BANK_FLOW_INCOMPLETE",
               "",
               "Unsupported local control flow remains; bank coverage is incomplete."));
-    for (String id : policy.ruleIds()) {
+    for (String id : BusinessPolicy.semanticRuleIds()) {
       Outcome outcome = outcomes.get(id);
       String disposition =
           outcome != null && outcome.violated
@@ -1857,7 +2005,8 @@ public final class BusinessAnalysis {
       finding.put(
           "streamTimingSitesTruncated",
           BusinessPolicy.GUARD.equals(id) && streamTimingSitesTruncated);
-      assessments.add(finding);
+      semanticAssessments.add(finding);
+      if (policy.ruleIds().contains(id)) assessments.add(finding);
     }
   }
 }

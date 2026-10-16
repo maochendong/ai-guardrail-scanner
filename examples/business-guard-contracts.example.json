@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "contracts": [
+    {
+      "symbol": "example.Port#generate",
+      "arity": 0,
+      "kind": "source",
+      "label": "model-output",
+      "assurance": "reviewed"
+    },
+    {
+      "symbol": "example.Port#allow",
+      "arity": 1,
+      "kind": "check",
+      "control": "guard",
+      "args": [0],
+      "accept": true,
+      "failureMode": "closed",
+      "assurance": "reviewed"
+    },
+    {
+      "symbol": "example.Port#publish",
+      "arity": 1,
+      "kind": "sink",
+      "channel": "release",
+      "args": [0],
+      "requiresLabel": "model-output",
+      "assurance": "reviewed"
+    }
+  ]
+}

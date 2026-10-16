@@ -50,11 +50,14 @@ public final class Scanner {
               "NO_SUPPORTED_SOURCE",
               "",
               "No supported production Java or Python source was analyzed."));
-    if (policy.enabled()) {
-      BusinessAnalysis bank = BusinessAnalysis.analyze(inventory, policy, cancel, javaSyntax, pythonSyntax);
+    if (policy.enabled() || policy.contractCount() > 0) {
+      BusinessAnalysis bank =
+          BusinessAnalysis.analyze(inventory, policy, cancel, javaSyntax, pythonSyntax);
       assessments.addAll(0, bank.assessments);
       diagnostics.addAll(bank.diagnostics);
       mappingCoverage.putAll(bank.mappingCoverage);
+      GenericSemanticAnalysis.merge(assessments, bank, policy, inventory, cancel);
+      detected |= ((Number) bank.mappingCoverage.get("matchedModelSourceSites")).intValue() > 0;
     }
     List<Map<String, Object>> bounded = new ArrayList<Map<String, Object>>();
     boolean truncated = assessments.size() > 1000;
@@ -89,9 +92,9 @@ public final class Scanner {
     Map<String, Object> report =
         Findings.map(
             "schemaVersion",
-            "1.6",
+            "1.7",
             "ruleSetVersion",
-            "java-python-guardrail-v8",
+            "java-python-guardrail-v9",
             "scanId",
             id,
             "createdAt",
@@ -125,7 +128,7 @@ public final class Scanner {
                 "minimumJavaVersion",
                 "1.7",
                 "scannerVersion",
-                "0.7.0"),
+                "0.8.0"),
             "policy",
             policy.metadata(),
             "mappingCoverage",

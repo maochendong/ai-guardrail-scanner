@@ -13,7 +13,9 @@ MANUAL_KINDS = {'CONFIRM_SCOPE', 'VERIFY_RUNTIME'}
 DETAIL_FIELDS = ['ruleId', 'domain', 'disposition', 'severity', 'title', 'explanation',
                  'recommendation', 'limitations', 'profile', 'mappedPathOutcomes',
                  'unknownCategory', 'manualReviewRequired', 'siteAssessmentsTruncated',
-                 'controlReviewSitesTruncated', 'callContextSitesTruncated', 'streamTimingSitesTruncated']
+                 'controlReviewSitesTruncated', 'callContextSitesTruncated', 'streamTimingSitesTruncated',
+                 'semanticScope', 'semanticCoverageIncomplete']
+SEMANTIC_FIELDS = ['kind', 'engine', 'policyDigest', 'sourceRuleIds', 'language']
 SITE_FIELDS = ['ruleId', 'disposition', 'unknownCategory', 'unknownReasons', 'evidence',
                'reviewActions', 'manualReviewRequired']
 SITE_GROUPS = [('siteAssessments', '调用点', '调用点评估列表已截断'),
@@ -75,6 +77,8 @@ def selected(item, fields):
 def exported_detail(item):
     """The SARIF metadata allowlist deliberately excludes symbols and analysis internals."""
     result = selected(item, DETAIL_FIELDS)
+    if 'semanticOrigin' in item:
+        result['semanticOrigin'] = selected(item['semanticOrigin'], SEMANTIC_FIELDS)
     result['unknownReasons'] = [selected(reason, ['category', 'code', 'explanation'])
                                 for reason in item.get('unknownReasons', [])]
     result['evidence'] = [selected(evidence, ['path', 'line', 'detail', 'role', 'nodeId'])
@@ -227,6 +231,7 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
         section_cursor = len(plain) if end < 0 else end
         section = plain[start + len(marker):section_cursor]
         parent_section = before_next_site(section)
+        validate_semantics(item, parent_section, report, tag)
         if item['disposition'] == 'UNKNOWN':
             labels = {'MISSING_MAPPING': '缺少映射', 'INSUFFICIENT_EVIDENCE': '证据不足', 'UNSUPPORTED': '暂不支持'}
             for reason in item['unknownReasons']:
@@ -272,14 +277,49 @@ def verify_unknowns(report, state, sarif_properties, markdown, context):
     contexts = [exported_detail(item) for item in report['assessments']
                 if any(item.get(field) or item.get(field + 'Truncated') for field in CONTEXT_FIELDS)]
     assert sarif_properties.get('contextAssessmentsDetails') == contexts, (context, 'SARIF context details differ')
+    semantics = [exported_detail(item) for item in report['assessments'] if 'semanticOrigin' in item]
+    assert sarif_properties.get('semanticAssessmentsDetails', []) == semantics, (context, 'SARIF semantic details differ')
     assert all(d.get('category') in CATEGORIES for d in report['diagnostics']), (context, 'unclassified diagnostics')
     assert 'UNKNOWN 原因分类' in markdown and all(label in markdown for label in ['缺少映射', '证据不足', '暂不支持']), (context, 'Markdown UNKNOWN breakdown missing')
     coverage = report.get('mappingCoverage')
     assert isinstance(coverage, dict), (context, 'mapping coverage missing')
     assert state.get('mappingCoverage') == coverage, (context, 'status mapping coverage differs')
     assert sarif_properties.get('mappingCoverage') == coverage, (context, 'SARIF mapping coverage differs')
-    if report['policy']['profile'] != 'generic':
+    if report['policy']['profile'] != 'generic' or report['policy'].get('contractCount', 0):
         for key in ['contractDefinitions', 'matchedDefinitions', 'matchedCallSites', 'matchedBoundarySites', 'candidateCallSites', 'argumentBindingFailures', 'analyzedFunctions', 'incompleteSourceFiles']:
             assert type(coverage.get(key)) is int and coverage[key] >= 0, (context, 'invalid mapping count', key)
         assert coverage['matchedDefinitions'] <= coverage['contractDefinitions'], (context, 'mapping definition counts')
         assert type(coverage.get('sourceDigestMatched')) is bool, (context, 'missing source binding result')
+
+
+def validate_semantics(item, section, report, tag):
+    if 'semanticOrigin' not in item:
+        assert 'semanticScope' not in item and 'semanticCoverageIncomplete' not in item, (tag, 'orphan semantic metadata')
+        return
+    origin = item['semanticOrigin']
+    assert isinstance(origin, dict) and set(origin) == set(SEMANTIC_FIELDS), (tag, 'invalid semantic origin')
+    assert (origin['kind'], origin['engine']) == ('external-api-contract', 'BusinessAnalysis'), (tag, 'invalid semantic engine')
+    digest = origin['policyDigest']
+    assert isinstance(digest, str) and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest), (tag, 'invalid semantic digest')
+    assert digest == report['policy'].get('digest'), (tag, 'semantic policy mismatch')
+    assert report['mappingCoverage'].get('sourceDigestMatched') is True, (tag, 'stale semantic source binding')
+    supported = {'AI-GUARD-002': ('java', ['BANK-GUARD-001']),
+                 'AI-PY-005': ('python', ['BANK-GUARD-001']),
+                 'AI-L2-003': ('java', ['BANK-INTERNAL-001', 'BANK-IAM-001']),
+                 'AI-PY-002': ('python', ['BANK-INTERNAL-001', 'BANK-IAM-001'])}
+    assert item['ruleId'] in supported, (tag, 'unsupported semantic projection')
+    assert (origin['language'], origin['sourceRuleIds']) == supported[item['ruleId']], (tag, 'semantic rule correspondence differs')
+    assert item.get('semanticScope') == 'MAPPED_LOCAL_SITES_ONLY', (tag, 'overbroad semantic scope')
+    assert type(item.get('semanticCoverageIncomplete')) is bool, (tag, 'missing semantic coverage marker')
+    assert item.get('siteAssessments'), (tag, 'semantic finding lacks located sites')
+    if item['disposition'] == 'OBSERVED':
+        assert all(site['disposition'] == 'OBSERVED' for site in item['siteAssessments']), (tag, 'unsafe semantic promotion')
+    if item.get('siteAssessmentsTruncated'):
+        assert item['semanticCoverageIncomplete'] is True, (tag, 'truncated semantic coverage claimed complete')
+    suffix = '.java' if origin['language'] == 'java' else '.py'
+    assert all(site['path'].endswith(suffix) for site in item['siteAssessments']), (tag, 'cross-language semantic site')
+    expected = '语义来源：{}；引擎：{}；策略摘要：{}；来源规则：[{}]；语言：{}。'.format(
+        origin['kind'], origin['engine'], digest, ', '.join(origin['sourceRuleIds']), origin['language'])
+    assert expected in section, (tag, 'Markdown semantic origin missing')
+    expected = '语义范围：MAPPED_LOCAL_SITES_ONLY；覆盖仍不完整：{}。'.format(str(item['semanticCoverageIncomplete']).lower())
+    assert expected in section, (tag, 'Markdown semantic boundary missing')

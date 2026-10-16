@@ -95,9 +95,96 @@ def context_fixture():
     return report, state, properties, markdown
 
 
+def semantic_fixture():
+    from report_schema import exported_detail
+    report, state, properties, markdown = fixture()
+    parent = report['assessments'][0]
+    parent['ruleId'] = 'AI-GUARD-002'
+    parent['siteAssessments'][0]['ruleId'] = 'AI-GUARD-002'
+    report['policy']['digest'] = 'a' * 64
+    parent['semanticOrigin'] = {'kind': 'external-api-contract', 'engine': 'BusinessAnalysis',
+                                'policyDigest': 'a' * 64, 'language': 'java',
+                                'sourceRuleIds': ['BANK-GUARD-001']}
+    parent['semanticScope'] = 'MAPPED_LOCAL_SITES_ONLY'
+    parent['semanticCoverageIncomplete'] = True
+    properties['reviewAssessmentsDetails'] = [exported_detail(parent)]
+    properties['semanticAssessmentsDetails'] = [exported_detail(parent)]
+    provenance = ('语义来源：external-api-contract；引擎：BusinessAnalysis；策略摘要：' + 'a' * 64 +
+                  '；来源规则：[BANK-GUARD-001]；语言：java。\n'
+                  '语义范围：MAPPED_LOCAL_SITES_ONLY；覆盖仍不完整：true。\n')
+    markdown = markdown.replace('### BANK-GUARD-001 · Guard\n',
+                                '### AI-GUARD-002 · Guard\n' + provenance)
+    return report, state, properties, markdown
+
+
 class ReportSchemaTest(unittest.TestCase):
     def verify(self, data):
         matrix.verify_unknowns(*data, context='fixture')
+
+    def test_semantic_provenance_round_trip(self):
+        self.verify(semantic_fixture())
+
+    def test_missing_semantic_sarif_is_rejected(self):
+        data = semantic_fixture()
+        del data[2]['semanticAssessmentsDetails']
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_wrong_semantic_policy_is_rejected(self):
+        data = semantic_fixture()
+        data[0]['policy']['digest'] = 'b' * 64
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_cross_language_semantic_site_is_rejected(self):
+        data = semantic_fixture()
+        data[0]['assessments'][0]['siteAssessments'][0]['path'] = 'other.py'
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_semantic_observed_cannot_hide_unknown_or_violated_sites(self):
+        from report_schema import validate_semantics
+        for disposition in ['UNKNOWN', 'VIOLATED']:
+            report, _, _, markdown = semantic_fixture()
+            parent = report['assessments'][0]
+            parent['disposition'] = 'OBSERVED'
+            parent['siteAssessments'][0]['disposition'] = disposition
+            with self.assertRaisesRegex(AssertionError, 'unsafe semantic promotion'):
+                validate_semantics(parent, markdown, report, 'fixture')
+
+    def test_truncated_semantic_coverage_cannot_claim_complete(self):
+        from report_schema import validate_semantics
+        report, _, _, markdown = semantic_fixture()
+        parent = report['assessments'][0]
+        parent['siteAssessmentsTruncated'] = True
+        parent['semanticCoverageIncomplete'] = False
+        with self.assertRaisesRegex(AssertionError, 'truncated semantic coverage'):
+            validate_semantics(parent, markdown, report, 'fixture')
+
+    def test_stale_source_cannot_export_located_semantics(self):
+        from report_schema import validate_semantics
+        report, _, _, markdown = semantic_fixture()
+        report['mappingCoverage']['sourceDigestMatched'] = False
+        with self.assertRaisesRegex(AssertionError, 'stale semantic source binding'):
+            validate_semantics(report['assessments'][0], markdown, report, 'fixture')
+
+    def test_whole_rule_semantic_coverage_is_rejected(self):
+        data = semantic_fixture()
+        data[0]['assessments'][0]['semanticScope'] = 'WHOLE_APPLICATION'
+        with self.assertRaises(AssertionError):
+            self.verify(data)
+
+    def test_missing_semantic_markdown_is_rejected(self):
+        report, state, properties, markdown = semantic_fixture()
+        markdown = '\n'.join(line for line in markdown.splitlines() if not line.startswith('语义来源：'))
+        with self.assertRaises(AssertionError):
+            self.verify((report, state, properties, markdown))
+
+    def test_private_semantic_fields_are_not_exported(self):
+        from report_schema import exported_detail
+        item = semantic_fixture()[0]['assessments'][0]
+        item['semanticOrigin']['privateContractBody'] = 'must not be exported'
+        self.assertNotIn('privateContractBody', exported_detail(item)['semanticOrigin'])
 
     def test_violation_parent_keeps_unknown_site_review(self):
         self.verify(fixture())
@@ -348,7 +435,7 @@ class ReportSchemaTest(unittest.TestCase):
                                  for node in tree.body), name)
             values = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
                       and isinstance(node.value, str)}
-            self.assertTrue({'0.7.0', '1.6', 'java-python-guardrail-v8'} <= values, name)
+            self.assertTrue({'0.8.0', '1.7', 'java-python-guardrail-v9'} <= values, name)
             self.assertTrue({'0.5.1', '1.4', 'java-python-guardrail-v6'}.isdisjoint(values), name)
 
 

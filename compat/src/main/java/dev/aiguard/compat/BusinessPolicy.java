@@ -281,8 +281,6 @@ public final class BusinessPolicy {
         if (!value.matches("[0-9a-f]{64}") || !boundDigests.add(value)) throw invalid();
       }
     }
-    if ("generic".equals(profile) && (!loaded.isEmpty() || !receiverBindings.isEmpty()))
-      throw invalid();
     this.profile = profile;
     this.source = source;
     contracts = Collections.unmodifiableMap(loaded);
@@ -387,6 +385,10 @@ public final class BusinessPolicy {
     if ("bank-internal".equals(profile) || "bank-all".equals(profile))
       ids.addAll(Arrays.asList(ACL, CAPABILITY));
     return ids;
+  }
+
+  static List<String> semanticRuleIds() {
+    return Arrays.asList(DATA, IAM, GUARD, FACTS, SUITABILITY, ACL, CAPABILITY);
   }
 
   public Map<String, Object> metadata() {

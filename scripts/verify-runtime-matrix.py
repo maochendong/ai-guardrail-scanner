@@ -78,10 +78,10 @@ class Client:
 
     def initialize(self):
         value = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.7.0'}})
+                                        'clientInfo': {'name': 'native-jvm-verification', 'version': '0.8.0'}})
         self.process.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         self.process.stdin.flush()
-        assert value['serverInfo']['version'] == '0.7.0'
+        assert value['serverInfo']['version'] == '0.8.0'
         return value
 
     def close(self):
@@ -214,15 +214,15 @@ def main():
                 sarif = json.loads(documents['sarif'])['runs'][0]
                 assert report['runtime']['javaVersion'].startswith(('1.7.', '1.8.'))
                 assert report['runtime']['javaVersion'] in version_text
-                assert report['schemaVersion'] == '1.6'
+                assert report['schemaVersion'] == '1.7'
                 verify_policy(report, args.profile, args.bank_policy)
                 assert {a['ruleId'] for a in report['assessments']} == expected_ids(
                     rules, report['project']['languages'], args.profile)
                 assert state['policy'] == report['policy']
                 assert state['gateDecision'] == report['gateDecision']
                 verify_unknowns(report, state, sarif['properties'], documents['markdown'], str(project))
-                assert report['runtime']['scannerVersion'] == '0.7.0'
-                assert report['ruleSetVersion'] == 'java-python-guardrail-v8'
+                assert report['runtime']['scannerVersion'] == '0.8.0'
+                assert report['ruleSetVersion'] == 'java-python-guardrail-v9'
                 if args.require_python_parse_success:
                     assert not any(d['code'] in ['PYTHON_PARSE_FAILED', 'PYTHON_PARSE_DEPTH',
                                                  'PYTHON_ANALYSIS_LIMIT', 'BANK_PYTHON_PARSE_FAILED',

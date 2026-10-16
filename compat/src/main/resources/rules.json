@@ -65,7 +65,7 @@
   "id" : "AI-L2-003",
   "domain" : "L2",
   "title" : "请求级 RAG 过滤条件",
-  "description" : "识别 Web 入参直接设置 QuestionAnswerAdvisor.FILTER_EXPRESSION 且同请求表达式绑定该 Advisor；过滤构造器或外部 ACL 未解析。",
+  "description" : "识别 Web 入参直接设置 QuestionAnswerAdvisor.FILTER_EXPRESSION 且同请求表达式绑定该 Advisor；显式外部 API 合同可补充同一检索位置的文档 ACL 与可信身份约束证据，未映射范围和运行时授权仍未证明。",
   "recommendation" : "由服务端构造不可被请求覆盖的租户约束，组合允许的用户筛选条件并验证检索授权。",
   "references" : [ "https://docs.spring.io/spring-ai/reference/api/retrieval-augmented-generation.html" ]
 }, {
@@ -100,7 +100,7 @@
   "id" : "AI-GUARD-002",
   "domain" : "L7",
   "title" : "模型输出判定消费",
-  "description" : "跟踪模型值进入源码内布尔判定或布尔结果记录，并检查结果是否用于提前退出。",
+  "description" : "跟踪模型值进入源码内布尔判定或布尔结果记录，并检查结果是否用于提前退出；显式外部 API 合同可补充同一模型值释放前的 Guard 结果消费及失败语义，结论仅适用于所列局部位置。",
   "recommendation" : "消费检查结果并建立明确拒绝路径；核实检查输入、输出值及全路径一致性。",
   "references" : [ ]
 }, {

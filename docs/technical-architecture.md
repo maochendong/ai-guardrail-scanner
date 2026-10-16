@@ -16,6 +16,8 @@ flowchart TD
     I --> K[BusinessFlow 语言无关中间表示]
     J --> K
     P[操作员维护的外部 API 合同] --> L[BusinessAnalysis 有界路径和值流分析]
+    L --> Q[GenericSemanticAnalysis 同义证据复用]
+    Q --> M
     K --> L
     K --> T[BusinessStreamTiming 首个映射释放的相对时序]
     P --> T
@@ -62,13 +64,15 @@ Python 路径解析导入、函数、客户端构造、字段接收者、关键�
 
 银行包分为 `bank-common`、`bank-customer`、`bank-internal`，`bank-all` 合并启用。共性三条检查数据出站、身份与资源绑定、Guard 失败阻断；客户场景检查事实约束与适当性；行内场景检查文档权限与工具能力授权。
 
+0.8.0 增加 `GenericSemanticAnalysis`：扫描内只执行一次共享合同分析，按语言和具体位置将 Guard 与检索权限证据送入 4 条通用规则。Guard 对应 Java `AI-GUARD-002` / Python `AI-PY-005`；检索权限对应 Java `AI-L2-003` / Python `AI-PY-002`，结合相同检索边界上的身份与文档权限约束。既有违反和未覆盖 UNKNOWN 保留，映射不对其他规则授予证明；数据出站不等于日志脱敏，普通资源访问不等于会话隔离，工具能力也不等于 schema 校验。
+
 ## 4. 用外部语义合同适配真实 API
 
 项目专属 API 的安全语义由操作员维护的外部 JSON 合同声明。引擎不会因为函数名称含 `guard`、`auth`、`mask` 或项目名称而授予安全结论。合同必须显式加载，不能从被扫描仓库中自动读取。
 
 合同把接口声明为四类角色：来源 source、转换 transform、校验 check、输出或执行 sink。它描述参数槽、主体、资源、输出字段、布尔或结果对象判定、正常返回断言、异常失败语义、return/yield 边界等。v2 的 `when` 可区分同一封装方法中的内容与状态事件，未知条件仍保留候选。
 
-`reviewed` 表示操作员声明已审查，`candidate` 表示资格或绑定未建立，二者都不等于扫描器验证了依赖实现。合同可绑定 `sourceDigest`；摘要失配会停用银行映射并输出 UNKNOWN，不使用过期合同继续判断。更新摘要前必须重新审查源码变化。
+`reviewed` 表示操作员声明已审查，`candidate` 表示资格或绑定未建立，二者都不等于扫描器验证了依赖实现。合同可绑定 `sourceDigest`；摘要失配会停用业务和通用语义映射并保留 UNKNOWN，不使用过期合同继续判断。更新摘要前必须重新审查源码变化。
 
 ## 5. 语言无关的路径和值流引擎
 

@@ -61,7 +61,7 @@ java -jar /opt/guardrail/ai-guardrail-scanner.jar mcp \
   --bank-policy /etc/guardrail/bank-contracts.json
 ```
 
-这些是路径占位示例。应指定实际 Java 7 或 Java 8 可执行文件、打包产物和操作员目录。未传 `--bank-policy` 时启用空合同，银行规则保持缺少映射的 UNKNOWN；`generic` 不接受非空合同。
+这些是路径占位示例。应指定实际 Java 7 或 Java 8 可执行文件、打包产物和操作员目录。未传 `--bank-policy` 时启用空合同，银行规则保持缺少映射的 UNKNOWN；0.8.0 起 `generic` 也接受显式外部合同，为对应通用规则提供语义证据，但仍不输出 BANK 专项评估。当前只复用 Guard 与检索权限的同义关系，不扩展所有控制域。
 
 合同顶层只有两个必需字段：
 

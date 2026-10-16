@@ -1,6 +1,6 @@
 # AI 安全围栏扫描 MCP Server
 
-对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.7.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
+对 Java / Spring Boot / Spring AI 与 Python/RAG 应用的源码和配置进行本地静态审计，输出七个控制域的证据、违反项和未评估范围。0.8.0 原生运行于 Java 7/8，提供 19 条 Java 规则、7 条 Python/RAG 规则及 7 条可选银行规则，支持自定义模型网关、Guard 调用关系及 function calling，不提供“安全总分”。
 
 银行模式通过启动参数 `--profile bank-common|bank-customer|bank-internal|bank-all` 选择，分别覆盖共性、客户服务/理财销售辅助、行内知识库/办公研发助手。使用外部操作员合同映射 API 后，追踪数据出站、可信身份、Guard 阻断、事实/适当性及文档/工具权限；缺少映射保留 `UNKNOWN`。配置、样例与限制见 [银行规则包](docs/banking-rules.md)，验收见 [0.4.0 银行验证](docs/banking-verification.md)。默认 `generic` 保留原有 26 条规则选择。0.5.0 支持 [真实 API 映射与 UNKNOWN 三类原因](docs/bank-semantic-mappings.md)，对应验收见 [0.5.0 记录](docs/semantic-mappings-verification.md)。
 
@@ -11,6 +11,8 @@
 0.6.0 增加 Java 条件分支、Python 流式元素来源和带参数条件的输出边界，按位置保留 UNKNOWN 原因及复核任务。身份信任、文档范围和 Guard 失败语义分别说明所需证据，技术能力缺口与必须人工确认的事项分开处理。规则集为 `java-python-guardrail-v7`，报告结构为 `1.5`；详见 [合同与报告说明](docs/bank-semantic-mappings.md)、[本轮验收记录](docs/unknown-followup-verification.md) 和 [整体技术实现方案](docs/technical-architecture.md)。
 
 0.7.0 将业务分析类及对应测试统一命名为 `Business*`，保留既有 `bank-*` 参数和规则 ID 兼容。新增有界的跨函数参数/返回分析、具体调用点的身份来源与首包相对时序证据；同一函数的其他入口、动态分派和必须人工确认的业务事实继续保留。规则集为 `java-python-guardrail-v8`，报告结构为 `1.6`。首包时序描述本地释放边界与映射检查的关系，不代表客户端网络送达或整体安全通过。详见 [0.7.0 验收记录](docs/business-context-stream-verification.md) 和 [整体技术实现方案](docs/technical-architecture.md)。
+
+0.8.0 允许 `generic` 显式加载外部 API 合同，通过一次共享语义分析为 Java/Python 的 Guard 与检索权限规则补充逐位置证据。原有框架检查及未覆盖 UNKNOWN 保留，不把业务专项整体结果当成通用规则通过。规则集为 `java-python-guardrail-v9`，报告结构为 `1.7`。规则包写法见 [编写指南](docs/business-rule-pack-authoring.md)，本轮范围与验收见 [0.8.0 记录](docs/semantic-reuse-verification.md)。
 
 ## 构建与演示
 
@@ -103,7 +105,7 @@ python3 scripts/verify-release.py \
 ## 执行边界与数据处理
 
 - 扫描只读解析源码与配置，不运行目标的 Maven、Gradle、应用、注解处理器或项目脚本，不下载目标依赖。Maven XML 禁用 DTD 和外部实体，不执行 XML 中的构建或插件声明。
-- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.7.0 未实现。
+- 不调用模型、不发送源码到远程服务。可选 LLM 语义复核属于后续扩展，0.8.0 未实现。
 - Java/Python 均使用固定版本的 ANTLR 语法解析，输入按 UTF-8 解码；解析失败或超预算的文件不使用部分语法结果。默认排除 `.git`、构建/依赖/工具目录、Python 虚拟环境与缓存，以及 Java/Python 测试目录；任意目录名只要具有 `pyvenv.cfg` 标记也按虚拟环境排除，`site-packages` 按依赖排除。排除项记录在 `EXCLUDED_SCOPE` 中。配置只选择 `pom.xml`、`build.gradle[.kts]`、`gradle.properties` 与 `application*.properties/yml/yaml`，其他 XML/YAML 不纳入当前配置规则。
 - 默认不跟随符号链接，并拒绝扫描范围逃逸和输入/输出目录重叠。单次最多清点 200,000 个目录条目、选择 10,000 个源码/配置文件，单文件 2 MiB、读取总量 32 MiB；预算耗尽或解析失败会留下诊断，不会计为通过。
 - 兼容实现使用不跟随链接的文件打开、路径、文件身份和修改信息校验，但不提供锚定目录读取或原子快照。每次记录 `FILESYSTEM_RACE_LIMITATION`，扫描期间源码树须保持稳定。

@@ -78,6 +78,19 @@ JSON 保留上述字段，Markdown 展示对应位置与限制；SARIF 的 `cont
 
 `mappingCoverage` 分别给出合同定义数、源码匹配声明数、实际命中调用位置、return/yield 边界、候选绑定、参数绑定失败与分析函数数。位置计数按相对路径、行号和符号去重，同一行同一 API 多次调用可能合并；这些是映射使用统计，不是安全覆盖率。仅有声明不会计作实际调用。
 
+## 0.8.0 通用规则复用
+
+`generic` 也可显式加载 `--bank-policy`，但不输出 BANK 专项规则；其他 profile 仍按既有范围选择专项输出。语义分析在单次扫描内执行一次，通用检查继续独立运行，通过 `GenericSemanticAnalysis` 消费以下同义证据：
+
+| 通用规则 | 共享语义依据 |
+| --- | --- |
+| Java `AI-GUARD-002`、Python `AI-PY-005` | 带模型输出来源标签的真实释放边界及同值 Guard 判定 |
+| Java `AI-L2-003`、Python `AI-PY-002` | 同一检索位置的文档 ACL 与主体/资源范围约束；不能只检查 ACL 而忽略身份 |
+
+这不是把七条业务评估逐条复制到通用规则。数据出站不等同日志处理，资源访问不等同会话隔离，工具能力不等同参数 schema；其余通用规则暂不消费外部合同。原有 VIOLATED 与未覆盖 UNKNOWN 保留；同一行的多个同 API 调用按位置保守合并，不拼接不同调用的成功证明。
+
+报告 schema `1.7` 新增 `semanticOrigin`（来源规则、语言、共享引擎及策略摘要）、`semanticScope: MAPPED_LOCAL_SITES_ONLY`、`semanticCoverageIncomplete`，明确证据的来源与局部边界。位置关联用不暴露 API 符号的摘要标识；SARIF 的 `semanticAssessmentsDetails` 保留全部语义评估，包括 OBSERVED 和 VIOLATED，Markdown 显示相同来源与范围。局部 OBSERVED 不是整个规则通过，新增评估可能增加 UNKNOWN 记录数。
+
 ## 保留的分析边界
 
 本轮支持常量 Map/字典字段、显式构造器和值载体、对象判定、受限 Python receiver 和默认参数，未实现完整跨过程分析。0.6.0 对 Java 根赋值/返回条件表达式保留择一分支；调用参数内部的条件表达式仍可能未知。隐式虚调用保留可定位的候选符号，不推断部署实现。

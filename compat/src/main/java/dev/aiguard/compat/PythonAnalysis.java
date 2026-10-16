@@ -49,7 +49,15 @@ public final class PythonAnalysis {
               "title",
               TITLES[i],
               "description",
-              TITLES[i] + "; bounded static evidence, not a safety certification.",
+              TITLES[i]
+                  + "; bounded static evidence, not a safety certification."
+                  + (i == 1
+                      ? " Explicit external API contracts can refine same-site document ACL and"
+                          + " identity binding; unmapped retrieval scope remains unknown."
+                      : i == 4
+                          ? " Explicit external API contracts can refine same-value Guard decisions"
+                              + " before local release; runtime and uncovered paths remain unknown."
+                          : ""),
               "recommendation",
               RECOMMENDATIONS[i],
               "references",

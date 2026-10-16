@@ -214,6 +214,25 @@ public final class Reports {
                 .append(escape(reason.get("explanation")))
                 .append('\n');
       }
+      if (a.get("semanticOrigin") instanceof Map<?, ?>) {
+        Map<String, Object> origin = semanticOrigin(a);
+        out.append("语义来源：")
+            .append(escape(origin.get("kind")))
+            .append("；引擎：")
+            .append(escape(origin.get("engine")))
+            .append("；策略摘要：")
+            .append(escape(origin.get("policyDigest")))
+            .append("；来源规则：")
+            .append(escape(origin.get("sourceRuleIds")))
+            .append("；语言：")
+            .append(escape(origin.get("language")))
+            .append("。\n")
+            .append("语义范围：")
+            .append(escape(a.get("semanticScope")))
+            .append("；覆盖仍不完整：")
+            .append(escape(a.get("semanticCoverageIncomplete")))
+            .append("。局部语义证据不覆盖其他路径。\n\n");
+      }
       appendReview(out, a, "");
       if (a.get("siteAssessments") instanceof List<?>) {
         for (Map<String, Object> site : list(a, "siteAssessments")) {
@@ -355,6 +374,7 @@ public final class Reports {
     List<Map<String, Object>> unknownDetails = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> otherReviewDetails = new ArrayList<Map<String, Object>>();
     List<Map<String, Object>> contextDetails = new ArrayList<Map<String, Object>>();
+    List<Map<String, Object>> semanticDetails = new ArrayList<Map<String, Object>>();
     Map<String, Object> coverage = new LinkedHashMap<String, Object>();
     List<String> unassessed = new ArrayList<String>();
     for (String domain : DOMAINS) {
@@ -371,6 +391,7 @@ public final class Reports {
       if (total == 0) unassessed.add(domain);
     }
     for (Map<String, Object> a : list(report, "assessments")) {
+      if (a.get("semanticOrigin") instanceof Map<?, ?>) semanticDetails.add(unknownDetail(a));
       if (!optionalList(a, "callContextSites").isEmpty()
           || !optionalList(a, "streamTimingSites").isEmpty()
           || Boolean.TRUE.equals(a.get("callContextSitesTruncated"))
@@ -478,6 +499,8 @@ public final class Reports {
             otherReviewDetails,
             "contextAssessmentsDetails",
             contextDetails,
+            "semanticAssessmentsDetails",
+            semanticDetails,
             "coverage",
             coverage,
             "unassessedDomains",
@@ -546,8 +569,12 @@ public final class Reports {
             "controlReviewSitesTruncated",
             "siteAssessmentsTruncated",
             "callContextSitesTruncated",
-            "streamTimingSitesTruncated"))
+            "streamTimingSitesTruncated",
+            "semanticScope",
+            "semanticCoverageIncomplete"))
       if (assessment.containsKey(key)) out.put(key, assessment.get(key));
+    if (assessment.get("semanticOrigin") instanceof Map<?, ?>)
+      out.put("semanticOrigin", semanticOrigin(assessment));
     List<Map<String, Object>> reasons = new ArrayList<Map<String, Object>>();
     if (assessment.get("unknownReasons") instanceof List<?>)
       for (Map<String, Object> reason : list(assessment, "unknownReasons"))
@@ -636,6 +663,17 @@ public final class Reports {
     Map<String, Object> out = new LinkedHashMap<String, Object>();
     for (String key : keys) if (source.containsKey(key)) out.put(key, source.get(key));
     return out;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> semanticOrigin(Map<String, Object> assessment) {
+    return select(
+        (Map<String, Object>) assessment.get("semanticOrigin"),
+        "kind",
+        "engine",
+        "policyDigest",
+        "sourceRuleIds",
+        "language");
   }
 
   private static List<Map<String, Object>> optionalList(Map<String, Object> source, String key) {
